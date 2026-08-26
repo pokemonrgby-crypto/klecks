@@ -22,6 +22,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Repair patch script
+        run: python scripts/fix-smart-correction-v2-patch.py
       - name: Apply patch
         run: python scripts/apply-smart-correction-v2-large.py
       - name: Install dependencies
@@ -31,6 +33,7 @@ jobs:
       - name: Commit implementation
         shell: bash
         run: |
+          rm scripts/fix-smart-correction-v2-patch.py
           rm scripts/apply-smart-correction-v2-large.py
           rm .github/workflows/smart-correction-v2-build.yml
           git config user.name "github-actions[bot]"
