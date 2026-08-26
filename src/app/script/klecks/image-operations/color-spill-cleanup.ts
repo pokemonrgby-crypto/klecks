@@ -12,6 +12,33 @@ export type TColorSpillLineSourceMode =
     | 'nearest-below'
     | 'all-below';
 
+export type TLocalColorCorrectionReason =
+    | 'resolved'
+    | 'single-region'
+    | 'regions-too-similar'
+    | 'insufficient-color-context';
+
+export type TLocalColorCorrectionResult = {
+    didChange: boolean;
+    bounds?: TIndexBounds;
+    needsAi: boolean;
+    reason: TLocalColorCorrectionReason;
+    componentCount: number;
+    confidence: number;
+};
+
+type TComponentStats = {
+    id: number;
+    area: number;
+    applyArea: number;
+    coloredCount: number;
+    alphaSum: number;
+    rSum: number;
+    gSum: number;
+    bSum: number;
+    fillRatio: number;
+};
+
 function growBarrier(
     source: Uint8Array,
     width: number,
@@ -45,13 +72,10 @@ function growBarrier(
 }
 
 /**
- * Builds a mask where 1 means "outside the line art".
- *
- * Visible line-art layers are composited only for analysis. Their pixels are
- * never modified. The outside region is the transparent/non-barrier region
- * connected to the canvas boundary.
+ * Builds one full-canvas line-art barrier mask at the beginning of a correction
+ * stroke. 1 means the local region analyzer may not cross that pixel.
  */
-export function createColorSpillOutsideMask(p: {
+export function createColorCorrectionLineMask(p: {
     lineSources: readonly TColorSpillLineSource[];
     canvasWidth: number;
     canvasHeight: number;
@@ -59,7 +83,6 @@ export function createColorSpillOutsideMask(p: {
 }): Uint8Array {
     const width = p.canvasWidth;
     const height = p.canvasHeight;
-    const len = width * height;
     const lineCanvas = BB.canvas(width, height);
     const lineCtx = BB.ctx(lineCanvas);
 
@@ -74,137 +97,311 @@ export function createColorSpillOutsideMask(p: {
     }
 
     const lineData = lineCtx.getImageData(0, 0, width, height).data;
-    let barrier = new Uint8Array(len);
-    for (let i = 0; i < len; i++) {
+    let barrier = new Uint8Array(width * height);
+    for (let i = 0; i < barrier.length; i++) {
         if (lineData[i * 4 + 3] >= 10) {
             barrier[i] = 1;
         }
     }
     BB.freeCanvas(lineCanvas);
+    barrier = growBarrier(barrier, width, height, p.barrierGrowPx ?? 0);
+    return barrier;
+}
 
-    barrier = growBarrier(barrier, width, height, p.barrierGrowPx ?? 1);
-
-    const outside = new Uint8Array(len);
-    const queue = new Int32Array(len);
-    let queueStart = 0;
-    let queueEnd = 0;
-
-    const enqueue = (index: number) => {
-        if (index < 0 || index >= len || barrier[index] || outside[index]) {
-            return;
-        }
-        outside[index] = 1;
-        queue[queueEnd++] = index;
-    };
-
-    if (width > 0 && height > 0) {
-        for (let x = 0; x < width; x++) {
-            enqueue(x);
-            enqueue((height - 1) * width + x);
-        }
-        for (let y = 1; y < height - 1; y++) {
-            enqueue(y * width);
-            enqueue(y * width + (width - 1));
+function getLargestRatioGap(components: TComponentStats[]): {
+    gap: number;
+    splitIndex: number;
+} {
+    let bestGap = -1;
+    let splitIndex = -1;
+    for (let i = 0; i < components.length - 1; i++) {
+        const gap = components[i + 1].fillRatio - components[i].fillRatio;
+        if (gap > bestGap) {
+            bestGap = gap;
+            splitIndex = i;
         }
     }
-
-    while (queueStart < queueEnd) {
-        const index = queue[queueStart++];
-        const x = index % width;
-        const y = Math.floor(index / width);
-        if (x > 0) {
-            enqueue(index - 1);
-        }
-        if (x + 1 < width) {
-            enqueue(index + 1);
-        }
-        if (y > 0) {
-            enqueue(index - width);
-        }
-        if (y + 1 < height) {
-            enqueue(index + width);
-        }
-    }
-
-    return outside;
+    return { gap: Math.max(0, bestGap), splitIndex };
 }
 
 /**
- * Erases only target-layer pixels that are both under the brush and classified
- * as outside the line-art boundary.
+ * Local smart color correction.
+ *
+ * The larger decision circle is split by line-art barriers into N connected
+ * regions. Each region is scored by how much of it is already colored on the
+ * target layer. Regions with clearly high coverage are treated as "inside";
+ * clearly low-coverage regions are treated as "outside". Only the smaller
+ * apply circle is modified.
+ *
+ * If the line art is open and therefore does not separate the circle, or the
+ * coverage groups are too similar, the function returns needsAi=true and does
+ * not touch pixels. That is the intended future model-fallback trigger.
  */
-export function eraseOutsideColorWithBrush(p: {
+export function correctColorLocallyWithBrush(p: {
     targetContext: CanvasRenderingContext2D;
-    outsideMask: Uint8Array;
+    lineMask: Uint8Array;
     canvasWidth: number;
     canvasHeight: number;
     x: number;
     y: number;
-    radius: number;
+    decisionRadius: number;
+    applyRadius: number;
     selectionMask?: Uint8Array;
-}): TIndexBounds | undefined {
-    const radius = Math.max(1, p.radius);
-    const x1 = Math.max(0, Math.floor(p.x - radius));
-    const y1 = Math.max(0, Math.floor(p.y - radius));
-    const x2 = Math.min(p.canvasWidth - 1, Math.ceil(p.x + radius));
-    const y2 = Math.min(p.canvasHeight - 1, Math.ceil(p.y + radius));
+}): TLocalColorCorrectionResult {
+    const decisionRadius = Math.max(4, p.decisionRadius);
+    const applyRadius = Math.max(1, Math.min(p.applyRadius, decisionRadius * 0.8));
+    const x1 = Math.max(0, Math.floor(p.x - decisionRadius));
+    const y1 = Math.max(0, Math.floor(p.y - decisionRadius));
+    const x2 = Math.min(p.canvasWidth - 1, Math.ceil(p.x + decisionRadius));
+    const y2 = Math.min(p.canvasHeight - 1, Math.ceil(p.y + decisionRadius));
     const width = x2 - x1 + 1;
     const height = y2 - y1 + 1;
+
     if (width <= 0 || height <= 0) {
-        return undefined;
+        return {
+            didChange: false,
+            needsAi: false,
+            reason: 'insufficient-color-context',
+            componentCount: 0,
+            confidence: 0,
+        };
     }
 
     const image = p.targetContext.getImageData(x1, y1, width, height);
     const data = image.data;
-    const radiusSq = radius * radius;
+    const labels = new Int32Array(width * height);
+    labels.fill(-2); // -2: outside decision circle / barrier, -1: unvisited region
+
+    const decisionRadiusSq = decisionRadius * decisionRadius;
+    const applyRadiusSq = applyRadius * applyRadius;
+    for (let ly = 0; ly < height; ly++) {
+        const gy = y1 + ly;
+        const dy = gy + 0.5 - p.y;
+        for (let lx = 0; lx < width; lx++) {
+            const gx = x1 + lx;
+            const dx = gx + 0.5 - p.x;
+            if (dx * dx + dy * dy > decisionRadiusSq) {
+                continue;
+            }
+            const globalIndex = gy * p.canvasWidth + gx;
+            if (!p.lineMask[globalIndex]) {
+                labels[ly * width + lx] = -1;
+            }
+        }
+    }
+
+    const queue = new Int32Array(width * height);
+    const components: TComponentStats[] = [];
+    let nextId = 0;
+
+    for (let start = 0; start < labels.length; start++) {
+        if (labels[start] !== -1) {
+            continue;
+        }
+
+        const stats: TComponentStats = {
+            id: nextId,
+            area: 0,
+            applyArea: 0,
+            coloredCount: 0,
+            alphaSum: 0,
+            rSum: 0,
+            gSum: 0,
+            bSum: 0,
+            fillRatio: 0,
+        };
+        let head = 0;
+        let tail = 0;
+        queue[tail++] = start;
+        labels[start] = nextId;
+
+        while (head < tail) {
+            const index = queue[head++];
+            const lx = index % width;
+            const ly = Math.floor(index / width);
+            const gx = x1 + lx;
+            const gy = y1 + ly;
+            const dx = gx + 0.5 - p.x;
+            const dy = gy + 0.5 - p.y;
+            stats.area++;
+            if (dx * dx + dy * dy <= applyRadiusSq) {
+                stats.applyArea++;
+            }
+
+            const alpha = data[index * 4 + 3];
+            if (alpha >= 16) {
+                stats.coloredCount++;
+                stats.alphaSum += alpha;
+                stats.rSum += data[index * 4] * alpha;
+                stats.gSum += data[index * 4 + 1] * alpha;
+                stats.bSum += data[index * 4 + 2] * alpha;
+            }
+
+            const tryVisit = (next: number) => {
+                if (next >= 0 && next < labels.length && labels[next] === -1) {
+                    labels[next] = nextId;
+                    queue[tail++] = next;
+                }
+            };
+            if (lx > 0) {
+                tryVisit(index - 1);
+            }
+            if (lx + 1 < width) {
+                tryVisit(index + 1);
+            }
+            if (ly > 0) {
+                tryVisit(index - width);
+            }
+            if (ly + 1 < height) {
+                tryVisit(index + width);
+            }
+        }
+
+        stats.fillRatio = stats.area > 0 ? stats.coloredCount / stats.area : 0;
+        components.push(stats);
+        nextId++;
+    }
+
+    const minArea = Math.max(12, Math.round(decisionRadius * 0.6));
+    const useful = components
+        .filter((component) => component.area >= minArea)
+        .sort((a, b) => a.fillRatio - b.fillRatio);
+
+    if (useful.length < 2) {
+        return {
+            didChange: false,
+            needsAi: true,
+            reason: 'single-region',
+            componentCount: useful.length,
+            confidence: 0,
+        };
+    }
+
+    const { gap, splitIndex } = getLargestRatioGap(useful);
+    if (splitIndex < 0 || gap < 0.18) {
+        return {
+            didChange: false,
+            needsAi: true,
+            reason: 'regions-too-similar',
+            componentCount: useful.length,
+            confidence: gap,
+        };
+    }
+
+    const outsideGroup = useful.slice(0, splitIndex + 1);
+    const insideGroup = useful.slice(splitIndex + 1);
+    const outsideMean =
+        outsideGroup.reduce((sum, item) => sum + item.fillRatio, 0) / outsideGroup.length;
+    const insideMean =
+        insideGroup.reduce((sum, item) => sum + item.fillRatio, 0) / insideGroup.length;
+
+    if (outsideMean > 0.48 || insideMean < 0.52) {
+        return {
+            didChange: false,
+            needsAi: true,
+            reason: 'insufficient-color-context',
+            componentCount: useful.length,
+            confidence: gap,
+        };
+    }
+
+    const classification = new Map<number, 'inside' | 'outside'>();
+    outsideGroup.forEach((component) => classification.set(component.id, 'outside'));
+    insideGroup.forEach((component) => classification.set(component.id, 'inside'));
+
+    const representativeColor = new Map<number, { r: number; g: number; b: number }>();
+    insideGroup.forEach((component) => {
+        if (component.alphaSum <= 0) {
+            return;
+        }
+        representativeColor.set(component.id, {
+            r: Math.round(component.rSum / component.alphaSum),
+            g: Math.round(component.gSum / component.alphaSum),
+            b: Math.round(component.bSum / component.alphaSum),
+        });
+    });
+
     let changed = false;
     let changedX1 = width;
     let changedY1 = height;
     let changedX2 = -1;
     let changedY2 = -1;
 
-    for (let localY = 0; localY < height; localY++) {
-        const globalY = y1 + localY;
-        const dy = globalY + 0.5 - p.y;
-        for (let localX = 0; localX < width; localX++) {
-            const globalX = x1 + localX;
-            const dx = globalX + 0.5 - p.x;
-            if (dx * dx + dy * dy > radiusSq) {
+    for (let ly = 0; ly < height; ly++) {
+        const gy = y1 + ly;
+        const dy = gy + 0.5 - p.y;
+        for (let lx = 0; lx < width; lx++) {
+            const gx = x1 + lx;
+            const dx = gx + 0.5 - p.x;
+            if (dx * dx + dy * dy > applyRadiusSq) {
+                continue;
+            }
+            const localIndex = ly * width + lx;
+            const componentId = labels[localIndex];
+            const regionClass = classification.get(componentId);
+            if (!regionClass) {
                 continue;
             }
 
-            const globalIndex = globalY * p.canvasWidth + globalX;
-            if (!p.outsideMask[globalIndex]) {
-                continue;
-            }
+            const globalIndex = gy * p.canvasWidth + gx;
             if (p.selectionMask && p.selectionMask[globalIndex] === 0) {
                 continue;
             }
 
-            const localIndex = localY * width + localX;
             const alphaIndex = localIndex * 4 + 3;
-            if (data[alphaIndex] === 0) {
-                continue;
+            const alpha = data[alphaIndex];
+            if (regionClass === 'outside') {
+                if (alpha === 0) {
+                    continue;
+                }
+                data[alphaIndex] = 0;
+            } else {
+                // First version fills only genuinely missing pixels. Existing
+                // semi-transparent/shaded paint is intentionally preserved.
+                if (alpha > 8) {
+                    continue;
+                }
+                const color = representativeColor.get(componentId);
+                if (!color) {
+                    continue;
+                }
+                data[localIndex * 4] = color.r;
+                data[localIndex * 4 + 1] = color.g;
+                data[localIndex * 4 + 2] = color.b;
+                data[alphaIndex] = 255;
             }
-            data[alphaIndex] = 0;
+
             changed = true;
-            changedX1 = Math.min(changedX1, localX);
-            changedY1 = Math.min(changedY1, localY);
-            changedX2 = Math.max(changedX2, localX);
-            changedY2 = Math.max(changedY2, localY);
+            changedX1 = Math.min(changedX1, lx);
+            changedY1 = Math.min(changedY1, ly);
+            changedX2 = Math.max(changedX2, lx);
+            changedY2 = Math.max(changedY2, ly);
         }
     }
 
     if (!changed) {
-        return undefined;
+        return {
+            didChange: false,
+            needsAi: false,
+            reason: 'resolved',
+            componentCount: useful.length,
+            confidence: gap,
+        };
     }
 
     p.targetContext.putImageData(image, x1, y1);
     return {
-        type: 'index',
-        x1: x1 + changedX1,
-        y1: y1 + changedY1,
-        x2: x1 + changedX2,
-        y2: y1 + changedY2,
+        didChange: true,
+        bounds: {
+            type: 'index',
+            x1: x1 + changedX1,
+            y1: y1 + changedY1,
+            x2: x1 + changedX2,
+            y2: y1 + changedY2,
+        },
+        needsAi: false,
+        reason: 'resolved',
+        componentCount: useful.length,
+        confidence: gap,
     };
 }

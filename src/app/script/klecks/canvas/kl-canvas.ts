@@ -1,8 +1,8 @@
 import { BB } from '../../bb/bb';
 import { floodFillBits } from '../image-operations/flood-fill';
 import {
-    createColorSpillOutsideMask,
-    eraseOutsideColorWithBrush,
+    correctColorLocallyWithBrush,
+    createColorCorrectionLineMask,
     TColorSpillLineSourceMode,
 } from '../image-operations/color-spill-cleanup';
 import { drawShape } from '../image-operations/shape-tool';
@@ -70,10 +70,11 @@ export type TLayerComposite = {
 type TColorSpillCleanupSession = {
     targetLayerId: TLayerId;
     targetLayerIndex: number;
-    outsideMask: Uint8Array;
+    lineMask: Uint8Array;
     selectionMask?: Uint8Array;
     changedBounds?: TIndexBounds;
     lastPoint?: { x: number; y: number };
+    ambiguousSampleCount: number;
 };
 
 const KL_CANVAS_DEBUGGING = false;
@@ -977,7 +978,7 @@ export class KlCanvas {
             return false;
         }
 
-        const outsideMask = createColorSpillOutsideMask({
+        const lineMask = createColorCorrectionLineMask({
             lineSources: sourceLayers.map((layer) => ({
                 context: layer.context,
                 opacity: layer.opacity,
@@ -989,49 +990,62 @@ export class KlCanvas {
         this.colorSpillCleanupSession = {
             targetLayerId: targetLayer.id,
             targetLayerIndex: layerIndex,
-            outsideMask,
+            lineMask,
             selectionMask: this.selection
                 ? getBinaryMask(this.selection, this.width, this.height)
                 : undefined,
+            ambiguousSampleCount: 0,
         };
         return true;
     }
 
-    applyColorSpillCleanup(x: number, y: number, radius: number): boolean {
+    applyColorSpillCleanup(
+        x: number,
+        y: number,
+        applyRadius: number,
+        decisionRadius: number,
+    ): { didChange: boolean; needsAi: boolean } {
         const session = this.colorSpillCleanupSession;
         if (!session) {
-            return false;
+            return { didChange: false, needsAi: false };
         }
         const targetLayer = this.layers[session.targetLayerIndex];
         if (!targetLayer || targetLayer.id !== session.targetLayerId) {
             this.colorSpillCleanupSession = undefined;
-            return false;
+            return { didChange: false, needsAi: false };
         }
 
         const start = session.lastPoint ?? { x, y };
         const distance = Math.hypot(x - start.x, y - start.y);
-        const step = Math.max(1, radius * 0.35);
+        const step = Math.max(1, applyRadius * 0.35);
         const sampleCount = Math.max(1, Math.ceil(distance / step));
         let didChange = false;
+        let needsAi = false;
 
         for (let i = 1; i <= sampleCount; i++) {
             const t = sampleCount === 1 ? 1 : i / sampleCount;
             const sampleX = start.x + (x - start.x) * t;
             const sampleY = start.y + (y - start.y) * t;
-            const bounds = eraseOutsideColorWithBrush({
+            const result = correctColorLocallyWithBrush({
                 targetContext: targetLayer.context,
-                outsideMask: session.outsideMask,
+                lineMask: session.lineMask,
                 canvasWidth: this.width,
                 canvasHeight: this.height,
                 x: sampleX,
                 y: sampleY,
-                radius,
+                decisionRadius,
+                applyRadius,
                 selectionMask: session.selectionMask,
             });
-            if (!bounds) {
+            if (result.needsAi) {
+                needsAi = true;
+                session.ambiguousSampleCount++;
+            }
+            if (!result.didChange || !result.bounds) {
                 continue;
             }
             didChange = true;
+            const bounds = result.bounds;
             if (!session.changedBounds) {
                 session.changedBounds = { ...bounds };
             } else {
@@ -1042,7 +1056,7 @@ export class KlCanvas {
             }
         }
         session.lastPoint = { x, y };
-        return didChange;
+        return { didChange, needsAi };
     }
 
     endColorSpillCleanup(): void {

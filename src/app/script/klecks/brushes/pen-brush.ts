@@ -17,7 +17,11 @@ import {
     analyzeSmartStroke,
     findSmartStrokeTailIntersection,
 } from '../events/smart-stroke-analyzer';
-import { TSmartStroke, TSmartStrokeTrimSuggestion } from '../events/smart-stroke.types';
+import {
+    TSmartStroke,
+    TSmartStrokeConnectSuggestion,
+    TSmartStrokeTrimSuggestion,
+} from '../events/smart-stroke.types';
 
 const ALPHA_CIRCLE = 0;
 const ALPHA_CHALK = 1;
@@ -50,7 +54,7 @@ type TEditableSmartStroke = {
 };
 
 type TSmartTrimDecision = {
-    target: 'current' | 'previous';
+    target: 'current' | 'both';
     intersection: { x: number; y: number };
 };
 
@@ -185,6 +189,40 @@ export class PenBrush {
         return { maxDistance: 0, minConfidence: Number.POSITIVE_INFINITY };
     }
 
+    private getConnectLimits(): {
+        maxDistance: number;
+        minDirectionDot: number;
+        minConfidence: number;
+    } {
+        const mode = SmartStrokeSettings.getMode();
+        if (mode === 'weak') {
+            return {
+                maxDistance: Math.max(6, Math.min(20, this.settingSize * 3)),
+                minDirectionDot: 0.78,
+                minConfidence: SmartStrokeSettings.getMinConnectConfidence(),
+            };
+        }
+        if (mode === 'normal') {
+            return {
+                maxDistance: Math.max(10, Math.min(36, this.settingSize * 5)),
+                minDirectionDot: 0.55,
+                minConfidence: SmartStrokeSettings.getMinConnectConfidence(),
+            };
+        }
+        if (mode === 'strong') {
+            return {
+                maxDistance: Math.max(16, Math.min(56, this.settingSize * 8)),
+                minDirectionDot: 0.3,
+                minConfidence: SmartStrokeSettings.getMinConnectConfidence(),
+            };
+        }
+        return {
+            maxDistance: 0,
+            minDirectionDot: 1,
+            minConfidence: Number.POSITIVE_INFINITY,
+        };
+    }
+
     private getRenderedTrimSuggestion(
         current: TSmartStroke,
     ): TSmartStrokeTrimSuggestion | undefined {
@@ -204,9 +242,31 @@ export class PenBrush {
             : undefined;
     }
 
+    private getRenderedConnectSuggestion(
+        current: TSmartStroke,
+    ): TSmartStrokeConnectSuggestion | undefined {
+        if (SmartStrokeSettings.getMode() === 'off' || this.recentRenderedStrokes.length === 0) {
+            return undefined;
+        }
+        const limits = this.getConnectLimits();
+        const analysis = analyzeSmartStroke(
+            current,
+            this.recentRenderedStrokes.slice(-16),
+            {
+                maxTrimDistance: 0,
+                maxConnectDistance: limits.maxDistance,
+                minConnectDirectionDot: limits.minDirectionDot,
+            },
+        );
+        const suggestion = analysis.suggestions.find((item) => item.type === 'connect');
+        return suggestion?.type === 'connect' && suggestion.confidence >= limits.minConfidence
+            ? suggestion
+            : undefined;
+    }
+
     private getSmartTrimDecision(current: TSmartStroke): TSmartTrimDecision | undefined {
         const currentSuggestion = this.getRenderedTrimSuggestion(current);
-        if (SmartStrokeSettings.getTarget() !== 'previous' || !this.lastEditableStroke) {
+        if (SmartStrokeSettings.getTarget() !== 'both' || !this.lastEditableStroke) {
             return currentSuggestion
                 ? { target: 'current', intersection: currentSuggestion.intersection }
                 : undefined;
@@ -227,20 +287,27 @@ export class PenBrush {
         }
 
         const limits = this.getTrimLimits();
+        const currentConfidence = Math.max(
+            0,
+            1 - crossing.currentTailLength / Math.max(1, limits.maxDistance),
+        );
         const previousConfidence = Math.max(
             0,
             1 - crossing.referenceTailLength / Math.max(1, limits.maxDistance),
         );
+        const currentQualifies =
+            crossing.currentTailLength > 0.5 &&
+            crossing.currentTailLength <= limits.maxDistance &&
+            currentConfidence >= limits.minConfidence;
         const previousQualifies =
             crossing.referenceTailLength > 0.5 &&
             crossing.referenceTailLength <= limits.maxDistance &&
             previousConfidence >= limits.minConfidence;
 
-        if (
-            previousQualifies &&
-            (!currentSuggestion || crossing.referenceTailLength < currentSuggestion.overshootLength * 0.9)
-        ) {
-            return { target: 'previous', intersection: crossing.intersection };
+        // `현재 + 직전 획` means both tails are corrected at the same crossing.
+        // It no longer chooses just one of the two strokes.
+        if (currentQualifies && previousQualifies) {
+            return { target: 'both', intersection: crossing.intersection };
         }
 
         return currentSuggestion
@@ -374,6 +441,54 @@ export class PenBrush {
         return result;
     }
 
+    private createConnectedInputArrFrom(
+        inputs: readonly TPressureInput[],
+        target: { x: number; y: number },
+    ): TPressureInput[] | undefined {
+        if (inputs.length < 2) {
+            return undefined;
+        }
+        const last = inputs[inputs.length - 1];
+        if (Math.hypot(target.x - last.x, target.y - last.y) <= 0.5) {
+            return undefined;
+        }
+        const result = inputs.map((item) => ({ ...item }));
+        result.push({ x: target.x, y: target.y, pressure: last.pressure });
+        return result;
+    }
+
+    private expandBeforeTilesForConnection(
+        base: Map<number, ImageData>,
+        from: { x: number; y: number },
+        to: { x: number; y: number },
+        brushSize: number,
+    ): Map<number, ImageData> {
+        const result = new Map(base);
+        const padding = Math.max(2, brushSize * 2);
+        const flags = getChangedTiles(
+            {
+                type: 'index',
+                x1: Math.floor(Math.min(from.x, to.x) - padding),
+                y1: Math.floor(Math.min(from.y, to.y) - padding),
+                x2: Math.ceil(Math.max(from.x, to.x) + padding),
+                y2: Math.ceil(Math.max(from.y, to.y) + padding),
+            },
+            this.context.canvas.width,
+            this.context.canvas.height,
+        );
+        const canvas = this.context.canvas;
+        const tilesX = Math.ceil(canvas.width / HISTORY_TILE_SIZE);
+        flags.forEach((isChanged, index) => {
+            if (!isChanged || result.has(index)) {
+                return;
+            }
+            const col = index % tilesX;
+            const row = Math.floor(index / tilesX);
+            result.set(index, getTileFromCanvas(canvas, col, row));
+        });
+        return result;
+    }
+
     private replayStrokeRaster(p: {
         inputs: readonly TPressureInput[];
         settings: TPenReplaySettings;
@@ -497,14 +612,19 @@ export class PenBrush {
         return trimmed;
     }
 
-    private applyPreviousSmartTrim(p: {
+    private applyBothSmartTrim(p: {
         currentInputs: readonly TPressureInput[];
         currentBeforeTiles: Map<number, ImageData>;
         currentSettings: TPenReplaySettings;
         currentSelectionPath?: Path2D;
         currentSelectionBounds?: TIndexBounds;
         intersection: { x: number; y: number };
-    }): Map<number, ImageData> | undefined {
+    }):
+        | {
+              currentInputs: TPressureInput[];
+              currentBeforeTiles: Map<number, ImageData>;
+          }
+        | undefined {
         const previous = this.lastEditableStroke;
         if (!previous || previous.beforeTiles.size === 0 || p.currentBeforeTiles.size === 0) {
             return undefined;
@@ -514,12 +634,16 @@ export class PenBrush {
             p.intersection,
             previous.settings.size,
         );
-        if (!trimmedPrevious) {
+        const trimmedCurrent = this.createTrimmedInputArrFrom(
+            p.currentInputs,
+            p.intersection,
+            p.currentSettings.size,
+        );
+        if (!trimmedPrevious || !trimmedCurrent) {
             return undefined;
         }
 
-        // Remove the current stroke first, then roll the immediately previous
-        // stroke back to its own pre-stroke pixels. No older stroke is rewritten.
+        // Roll both strokes back, then replay both only up to the shared crossing.
         this.restoreTileMap(p.currentBeforeTiles);
         this.restoreTileMap(previous.beforeTiles);
         this.replayStrokeRaster({
@@ -529,12 +653,9 @@ export class PenBrush {
             selectionBounds: previous.selectionBounds,
         });
 
-        // The current stroke's future rollback baseline must include the now
-        // corrected previous stroke, otherwise a later correction would revive
-        // the old overshoot.
         const correctedCurrentBefore = this.snapshotTileIndices(p.currentBeforeTiles.keys());
         this.replayStrokeRaster({
-            inputs: p.currentInputs,
+            inputs: trimmedCurrent,
             settings: p.currentSettings,
             selectionPath: p.currentSelectionPath,
             selectionBounds: p.currentSelectionBounds,
@@ -549,7 +670,45 @@ export class PenBrush {
         if (correctedPreviousStroke && historyIndex >= 0) {
             this.recentRenderedStrokes[historyIndex] = correctedPreviousStroke;
         }
-        return correctedCurrentBefore;
+        return {
+            currentInputs: trimmedCurrent,
+            currentBeforeTiles: correctedCurrentBefore,
+        };
+    }
+
+    private applyCurrentSmartConnect(p: {
+        inputs: readonly TPressureInput[];
+        beforeTiles: Map<number, ImageData>;
+        settings: TPenReplaySettings;
+        selectionPath?: Path2D;
+        selectionBounds?: TIndexBounds;
+        target: { x: number; y: number };
+    }):
+        | {
+              inputs: TPressureInput[];
+              beforeTiles: Map<number, ImageData>;
+          }
+        | undefined {
+        const connected = this.createConnectedInputArrFrom(p.inputs, p.target);
+        if (!connected || p.beforeTiles.size === 0) {
+            return undefined;
+        }
+        const last = p.inputs[p.inputs.length - 1];
+        const expandedBefore = this.expandBeforeTilesForConnection(
+            p.beforeTiles,
+            last,
+            p.target,
+            p.settings.size,
+        );
+        this.restoreTileMap(expandedBefore);
+        this.replayStrokeRaster({
+            inputs: connected,
+            settings: p.settings,
+            selectionPath: p.selectionPath,
+            selectionBounds: p.selectionBounds,
+        });
+        this.changedTiles = this.changedTilesFromMaps(expandedBefore);
+        return { inputs: connected, beforeTiles: expandedBefore };
     }
 
     private invalidateSmartHistoryIfNeeded(): void {
@@ -854,8 +1013,6 @@ export class PenBrush {
             : undefined;
         const originalCurrentBeforeTiles = new Map(this.strokeStartTiles);
 
-        // Finish the normal raster stroke first. Smart correction then rewrites
-        // a bounded set of touched tiles and commits the final pixels once.
         let localSize = this.settingHasSizePressure
             ? Math.max(0.1, this.lastInput.pressure * this.settingSize)
             : Math.max(0.1, this.settingSize);
@@ -892,6 +1049,7 @@ export class PenBrush {
 
         let committedInputs = currentInputs;
         let editableBeforeTiles = originalCurrentBeforeTiles;
+        let didTrim = false;
         const renderedStroke = this.createRenderedSmartStroke(
             currentInputs,
             currentSettings.size,
@@ -904,8 +1062,8 @@ export class PenBrush {
             originalCurrentBeforeTiles.size > 0
         ) {
             const decision = this.getSmartTrimDecision(renderedStroke);
-            if (decision?.target === 'previous') {
-                const correctedBefore = this.applyPreviousSmartTrim({
+            if (decision?.target === 'both') {
+                const corrected = this.applyBothSmartTrim({
                     currentInputs,
                     currentBeforeTiles: originalCurrentBeforeTiles,
                     currentSettings,
@@ -913,8 +1071,10 @@ export class PenBrush {
                     currentSelectionBounds,
                     intersection: decision.intersection,
                 });
-                if (correctedBefore) {
-                    editableBeforeTiles = correctedBefore;
+                if (corrected) {
+                    committedInputs = corrected.currentInputs;
+                    editableBeforeTiles = corrected.currentBeforeTiles;
+                    didTrim = true;
                 }
             } else if (decision?.target === 'current') {
                 const trimmed = this.applyCurrentSmartTrim({
@@ -927,6 +1087,33 @@ export class PenBrush {
                 });
                 if (trimmed) {
                     committedInputs = trimmed;
+                    didTrim = true;
+                }
+            }
+
+            // A trim has priority over connect. If nothing crossed, a confident
+            // near-endpoint suggestion now extends the current stroke for real.
+            if (!didTrim) {
+                const connectSource = this.createRenderedSmartStroke(
+                    committedInputs,
+                    currentSettings.size,
+                );
+                const connectSuggestion = connectSource
+                    ? this.getRenderedConnectSuggestion(connectSource)
+                    : undefined;
+                if (connectSuggestion) {
+                    const connected = this.applyCurrentSmartConnect({
+                        inputs: committedInputs,
+                        beforeTiles: editableBeforeTiles,
+                        settings: currentSettings,
+                        selectionPath: currentSelectionPath,
+                        selectionBounds: currentSelectionBounds,
+                        target: connectSuggestion.to,
+                    });
+                    if (connected) {
+                        committedInputs = connected.inputs;
+                        editableBeforeTiles = connected.beforeTiles;
+                    }
                 }
             }
         }

@@ -12,6 +12,7 @@ export type TEaselPaintBucketParams = {
     onFill: (p: TVector2D) => void;
     getIsCleanupMode: () => boolean;
     getCleanupRadius: () => number;
+    getCleanupDecisionRadius: () => number;
     onCleanupStart: (p: TVector2D) => boolean;
     onCleanupMove: (p: TVector2D) => void;
     onCleanupEnd: () => void;
@@ -22,10 +23,12 @@ export class EaselPaintBucket implements TEaselTool {
     private readonly onFill: TEaselPaintBucketParams['onFill'];
     private readonly getIsCleanupMode: TEaselPaintBucketParams['getIsCleanupMode'];
     private readonly getCleanupRadius: TEaselPaintBucketParams['getCleanupRadius'];
+    private readonly getCleanupDecisionRadius: TEaselPaintBucketParams['getCleanupDecisionRadius'];
     private readonly onCleanupStart: TEaselPaintBucketParams['onCleanupStart'];
     private readonly onCleanupMove: TEaselPaintBucketParams['onCleanupMove'];
     private readonly onCleanupEnd: TEaselPaintBucketParams['onCleanupEnd'];
     private readonly cleanupCursor = new BrushCursorRound();
+    private readonly decisionCursor = new BrushCursorRound();
     private easel: TEaselInterface = {} as TEaselInterface;
     private isDragging = false;
     private lastViewportPos: TVector2D = { x: 0, y: 0 };
@@ -40,11 +43,13 @@ export class EaselPaintBucket implements TEaselTool {
         this.easel.setCursor('none');
         if (this.isOver) {
             this.svgEl.setAttribute('opacity', '1');
-            this.cleanupCursor.update(
-                transform ?? this.easel.getTransform(),
+            const t = transform ?? this.easel.getTransform();
+            this.decisionCursor.update(
+                t,
                 this.lastViewportPos,
-                this.getCleanupRadius(),
+                this.getCleanupDecisionRadius(),
             );
+            this.cleanupCursor.update(t, this.lastViewportPos, this.getCleanupRadius());
         }
     }
 
@@ -56,16 +61,15 @@ export class EaselPaintBucket implements TEaselTool {
         this.onCleanupEnd();
     }
 
-    // ----------------------------------- public -----------------------------------
     constructor(p: TEaselPaintBucketParams) {
-        this.svgEl = BB.createSvg({
-            elementType: 'g',
-        });
+        this.svgEl = BB.createSvg({ elementType: 'g' });
         this.svgEl.setAttribute('opacity', '0');
-        this.svgEl.append(this.cleanupCursor.getElement());
+        this.decisionCursor.getElement().setAttribute('opacity', '0.35');
+        this.svgEl.append(this.decisionCursor.getElement(), this.cleanupCursor.getElement());
         this.onFill = p.onFill;
         this.getIsCleanupMode = p.getIsCleanupMode;
         this.getCleanupRadius = p.getCleanupRadius;
+        this.getCleanupDecisionRadius = p.getCleanupDecisionRadius;
         this.onCleanupStart = p.onCleanupStart;
         this.onCleanupMove = p.onCleanupMove;
         this.onCleanupEnd = p.onCleanupEnd;
@@ -126,7 +130,16 @@ export class EaselPaintBucket implements TEaselTool {
 
     onUpdateTransform(transform: TViewportTransform): void {
         if (this.getIsCleanupMode() && this.isOver) {
-            this.cleanupCursor.update(transform, this.lastViewportPos, this.getCleanupRadius());
+            this.decisionCursor.update(
+                transform,
+                this.lastViewportPos,
+                this.getCleanupDecisionRadius(),
+            );
+            this.cleanupCursor.update(
+                transform,
+                this.lastViewportPos,
+                this.getCleanupRadius(),
+            );
         }
     }
 
