@@ -2,6 +2,7 @@ import {
     TSmartStroke,
     TSmartStrokeAnalysis,
     TSmartStrokeConnectSuggestion,
+    TSmartStrokeCorrectionSuggestion,
     TSmartStrokeSample,
     TSmartStrokeTrimSuggestion,
 } from './smart-stroke.types';
@@ -231,7 +232,7 @@ export function analyzeSmartStroke(
         options.maxConnectDistance ?? Math.max(5, Math.min(20, current.brushRadius * 2));
     const minDirectionDot = options.minConnectDirectionDot ?? 0.6;
 
-    const suggestions = [];
+    const suggestions: TSmartStrokeCorrectionSuggestion[] = [];
     const trim = findTrimSuggestion(current, recentStrokes, maxTrimDistance);
     if (trim) {
         suggestions.push(trim);
