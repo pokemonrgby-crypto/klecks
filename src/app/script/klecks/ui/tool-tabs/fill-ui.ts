@@ -8,9 +8,7 @@ import { KlColorSlider } from '../components/kl-color-slider';
 import { css } from '../../../bb/base/base';
 import { TColorSpillLineSourceMode } from '../../image-operations/color-spill-cleanup';
 
-/**
- * Paint Bucket tab contents (color slider, opacity slider, etc)
- */
+/** Paint Bucket tab contents (color slider, opacity slider, etc). */
 export class FillUi {
     private readonly rootEl: HTMLElement;
     private isVisible: boolean;
@@ -26,40 +24,32 @@ export class FillUi {
     private isColorCleanup: boolean = false;
     private readonly normalControlsEl: HTMLElement;
     private readonly cleanupControlsEl: HTMLElement;
-    private readonly cleanupRadiusSlider: KlSlider;
+    private readonly cleanupApplySizeSlider: KlSlider;
+    private readonly cleanupDecisionSizeSlider: KlSlider;
     private readonly cleanupBarrierGrowSlider: KlSlider;
     private readonly cleanupReferenceSelect: Select<TColorSpillLineSourceMode>;
 
-    // ----------------------------------- public -----------------------------------
-
-    constructor(p: {
-        colorSlider: KlColorSlider; // when opening tab, inserts it (snatches it from where else it was)
-    }) {
-        this.rootEl = BB.el({
-            css: {
-                margin: 10,
-            },
-        });
+    constructor(p: { colorSlider: KlColorSlider }) {
+        this.rootEl = BB.el({ css: { margin: 10 } });
         this.isVisible = true;
         this.colorSlider = p.colorSlider;
 
         const cleanupToggle = new Checkbox({
             init: false,
-            label: '채색 넘침 보정 브러시',
-            title: '켜면 페인트통이 연속 보정 브러시로 바뀌고, 선화 바깥쪽 채색만 지웁니다.',
+            label: '스마트 채색 보정 브러시',
+            title: '선화로 나뉜 주변 영역의 채색률을 비교해 넘친 색은 지우고, 안쪽의 빈 곳은 채웁니다.',
             callback: (b) => {
                 this.isColorCleanup = b;
                 this.normalControlsEl.style.display = b ? 'none' : 'block';
                 this.cleanupControlsEl.style.display = b ? 'block' : 'none';
             },
-            name: 'color-spill-cleanup-toggle',
+            name: 'smart-color-correction-toggle',
         });
         this.rootEl.append(
+            BB.el({ content: cleanupToggle.getElement() }),
             BB.el({
-                content: cleanupToggle.getElement(),
-            }),
-            BB.el({
-                content: 'S Pen으로 문지르면 선화 안쪽은 유지하고 바깥으로 삐져나온 채색만 지웁니다.',
+                content:
+                    '큰 판정 범위에서 선화가 나누는 영역별 채색률을 비교하고, 작은 적용 브러시 안에서만 자동으로 지우거나 채웁니다.',
                 css: { marginTop: 4, fontSize: 12, opacity: 0.75, lineHeight: 1.35 },
             }),
         );
@@ -71,9 +61,7 @@ export class FillUi {
 
         this.colorDiv = BB.el({
             parent: this.normalControlsEl,
-            css: {
-                marginBottom: 10,
-            },
+            css: { marginBottom: 10 },
         });
 
         this.opacitySlider = new KlSlider({
@@ -98,25 +86,18 @@ export class FillUi {
             toValue: (displayValue) => displayValue * (255 / 100),
             toDisplayValue: (value) => value / (255 / 100),
         });
-        css(this.toleranceSlider.getElement(), {
-            marginTop: 10,
-        });
+        css(this.toleranceSlider.getElement(), { marginTop: 10 });
         this.normalControlsEl.append(this.toleranceSlider.getElement());
 
         const selectRow = BB.el({
             parent: this.normalControlsEl,
-            css: {
-                display: 'flex',
-                marginTop: 10,
-            },
+            css: { display: 'flex', marginTop: 10 },
         });
 
         const modeWrapper = BB.el({
             content: LANG('bucket-sample') + '&nbsp;',
             title: LANG('bucket-sample-title'),
-            css: {
-                fontSize: 15,
-            },
+            css: { fontSize: 15 },
         });
         this.modeSelect = new Select({
             optionArr: [
@@ -129,9 +110,7 @@ export class FillUi {
         });
         new BB.PointerListener({
             target: this.modeSelect.getElement(),
-            onWheel: (e) => {
-                this.modeSelect.setDeltaValue(e.deltaY);
-            },
+            onWheel: (e) => this.modeSelect.setDeltaValue(e.deltaY),
         });
         modeWrapper.append(this.modeSelect.getElement());
         selectRow.append(modeWrapper);
@@ -139,30 +118,16 @@ export class FillUi {
         const growWrapper = BB.el({
             content: LANG('bucket-grow') + '&nbsp;',
             title: LANG('bucket-grow-title'),
-            css: {
-                fontSize: 15,
-                marginLeft: 10,
-            },
+            css: { fontSize: 15, marginLeft: 10 },
         });
         this.growSelect = new Select({
-            optionArr: [
-                ['0', '0'],
-                ['1', '1'],
-                ['2', '2'],
-                ['3', '3'],
-                ['4', '4'],
-                ['5', '5'],
-                ['6', '6'],
-                ['7', '7'],
-            ],
+            optionArr: ['0', '1', '2', '3', '4', '5', '6', '7'].map((v) => [v, v]),
             initValue: '0',
             name: 'fill-growth',
         });
         new BB.PointerListener({
             target: this.growSelect.getElement(),
-            onWheel: (e) => {
-                this.growSelect.setDeltaValue(e.deltaY);
-            },
+            onWheel: (e) => this.growSelect.setDeltaValue(e.deltaY),
         });
         growWrapper.append(this.growSelect.getElement());
         selectRow.append(growWrapper);
@@ -177,42 +142,52 @@ export class FillUi {
             },
             name: 'is-contiguous',
         });
-
         this.eraserToggle = new Checkbox({
             init: false,
             label: LANG('eraser'),
             name: 'eraser-toggle',
         });
-
         this.normalControlsEl.append(
             BB.el({
                 content: [contiguousToggle.getElement(), this.eraserToggle.getElement()],
-                css: {
-                    display: 'flex',
-                    marginTop: 10,
-                    gap: 10,
-                },
+                css: { display: 'flex', marginTop: 10, gap: 10 },
             }),
         );
 
         this.cleanupControlsEl = BB.el({
             parent: this.rootEl,
-            css: {
-                display: 'none',
-                marginTop: 12,
-            },
+            css: { display: 'none', marginTop: 12 },
         });
 
-        this.cleanupRadiusSlider = new KlSlider({
-            label: '보정 브러시 크기',
+        this.cleanupApplySizeSlider = new KlSlider({
+            label: '적용 브러시 크기',
             width: 250,
             height: 30,
             min: 4,
             max: 256,
-            value: 52,
+            value: 48,
             manualInputRoundDigits: 0,
         });
-        this.cleanupControlsEl.append(this.cleanupRadiusSlider.getElement());
+        this.cleanupControlsEl.append(this.cleanupApplySizeSlider.getElement());
+
+        this.cleanupDecisionSizeSlider = new KlSlider({
+            label: '판정 범위',
+            width: 250,
+            height: 30,
+            min: 16,
+            max: 512,
+            value: 144,
+            manualInputRoundDigits: 0,
+        });
+        css(this.cleanupDecisionSizeSlider.getElement(), { marginTop: 10 });
+        this.cleanupControlsEl.append(
+            this.cleanupDecisionSizeSlider.getElement(),
+            BB.el({
+                content:
+                    '바깥 원은 안/밖을 판정할 문맥이고, 실제 수정은 더 작은 적용 브러시 안에서만 일어납니다.',
+                css: { marginTop: 4, fontSize: 12, opacity: 0.75, lineHeight: 1.35 },
+            }),
+        );
 
         const referenceRow = BB.el({
             parent: this.cleanupControlsEl,
@@ -233,26 +208,27 @@ export class FillUi {
                 ['all-below', '아래쪽 모두'],
             ],
             initValue: 'nearest-above',
-            name: 'color-spill-line-source',
+            name: 'smart-color-line-source',
             title: '현재 채색 레이어를 기준으로 어떤 보이는 레이어를 선화 경계로 사용할지 선택합니다.',
             css: { minWidth: 112 },
         });
         referenceRow.append(this.cleanupReferenceSelect.getElement());
 
         this.cleanupBarrierGrowSlider = new KlSlider({
-            label: '선 틈 보정',
+            label: '미세 선 틈 보정',
             width: 250,
             height: 30,
             min: 0,
-            max: 4,
-            value: 1,
+            max: 3,
+            value: 0,
             manualInputRoundDigits: 0,
         });
         css(this.cleanupBarrierGrowSlider.getElement(), { marginTop: 10 });
         this.cleanupControlsEl.append(
             this.cleanupBarrierGrowSlider.getElement(),
             BB.el({
-                content: '값을 높이면 분석할 때만 선화를 조금 두껍게 보아 작은 틈으로 바깥 영역이 새는 것을 줄입니다. 실제 선화는 바뀌지 않습니다.',
+                content:
+                    '0이면 선화를 그대로 판정합니다. 영역이 충분히 나뉘지 않거나 채색률 차이가 애매하면 픽셀을 건드리지 않고 AI fallback 대상으로 남깁니다.',
                 css: { marginTop: 4, fontSize: 12, opacity: 0.75, lineHeight: 1.35 },
             }),
         );
@@ -273,7 +249,6 @@ export class FillUi {
         }
     }
 
-    /** [0, 1] */
     getTolerance(): number {
         if (Math.round(this.toleranceSlider.getDisplayValue()) === 0) {
             return 0;
@@ -306,7 +281,12 @@ export class FillUi {
     }
 
     getColorCleanupRadius(): number {
-        return Math.max(2, this.cleanupRadiusSlider.getValue() / 2);
+        return Math.max(2, this.cleanupApplySizeSlider.getValue() / 2);
+    }
+
+    getColorCleanupDecisionRadius(): number {
+        const applyRadius = this.getColorCleanupRadius();
+        return Math.max(applyRadius * 1.5, this.cleanupDecisionSizeSlider.getValue() / 2);
     }
 
     getColorCleanupLineSourceMode(): TColorSpillLineSourceMode {
