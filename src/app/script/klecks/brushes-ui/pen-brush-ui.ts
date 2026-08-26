@@ -14,6 +14,7 @@ import { Select } from '../ui/components/select';
 import {
     SmartStrokeSettings,
     TSmartStrokeMode,
+    TSmartStrokeTarget,
 } from '../events/smart-stroke-settings';
 
 export const penBrushUi = (function () {
@@ -150,6 +151,29 @@ export const penBrushUi = (function () {
         });
         smartStrokeRow.append(smartStrokeSelect.getElement());
 
+        const smartStrokeTargetSelect = new Select<TSmartStrokeTarget>({
+            optionArr: [
+                ['current', '현재 획만'],
+                ['previous', '직전 획까지'],
+            ],
+            initValue: SmartStrokeSettings.getTarget(),
+            onChange: (target) => SmartStrokeSettings.setTarget(target),
+            title: '직전 획까지를 선택하면 방금 그은 획과 직전 획의 꼬리를 비교해 더 자연스러운 쪽을 정리합니다.',
+            name: 'smart-stroke-target',
+            css: { minWidth: 112 },
+        });
+        const smartStrokeTargetRow = BB.el({
+            tagName: 'label',
+            content: '보정 대상&nbsp;',
+            css: {
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginTop: 8,
+            },
+        });
+        smartStrokeTargetRow.append(smartStrokeTargetSelect.getElement());
+
         const spacingSpline = new BB.SplineInterpolator([
             [0, 15],
             [8, 7],
@@ -277,6 +301,7 @@ export const penBrushUi = (function () {
                     },
                 }),
                 smartStrokeRow,
+                smartStrokeTargetRow,
             );
         }
 

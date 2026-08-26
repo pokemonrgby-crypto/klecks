@@ -1,6 +1,10 @@
 import { BB } from '../../bb/bb';
 import { floodFillBits } from '../image-operations/flood-fill';
-import { cleanupColorSpill } from '../image-operations/color-spill-cleanup';
+import {
+    createColorSpillOutsideMask,
+    eraseOutsideColorWithBrush,
+    TColorSpillLineSourceMode,
+} from '../image-operations/color-spill-cleanup';
 import { drawShape } from '../image-operations/shape-tool';
 import { renderText, TRenderTextParam } from '../image-operations/render-text';
 import {
@@ -63,6 +67,15 @@ export type TLayerComposite = {
     draw: (ctx: CanvasRenderingContext2D) => void;
 };
 
+type TColorSpillCleanupSession = {
+    targetLayerId: TLayerId;
+    targetLayerIndex: number;
+    outsideMask: Uint8Array;
+    selectionMask?: Uint8Array;
+    changedBounds?: TIndexBounds;
+    lastPoint?: { x: number; y: number };
+};
+
 const KL_CANVAS_DEBUGGING = false;
 
 /**
@@ -79,6 +92,7 @@ export class KlCanvas {
     private eyedropper: Eyedropper;
     private selection: undefined | MultiPolygon = undefined;
     private readonly klHistory: KlHistory;
+    private colorSpillCleanupSession: TColorSpillCleanupSession | undefined;
 
     private updateIndices(): void {
         this.layers.forEach((item, index) => {
@@ -926,6 +940,130 @@ export class KlCanvas {
         }
     }
 
+    beginColorSpillCleanup(
+        layerIndex: number,
+        sourceMode: TColorSpillLineSourceMode,
+        barrierGrowPx: number,
+    ): boolean {
+        this.endColorSpillCleanup();
+        const targetLayer = this.layers[layerIndex];
+        if (!targetLayer) {
+            return false;
+        }
+
+        const visible = (layer: TKlCanvasLayer) => layer.isVisible && layer.opacity > 0;
+        let sourceLayers: TKlCanvasLayer[] = [];
+        if (sourceMode === 'nearest-above') {
+            for (let i = layerIndex + 1; i < this.layers.length; i++) {
+                if (visible(this.layers[i])) {
+                    sourceLayers = [this.layers[i]];
+                    break;
+                }
+            }
+        } else if (sourceMode === 'all-above') {
+            sourceLayers = this.layers.slice(layerIndex + 1).filter(visible);
+        } else if (sourceMode === 'nearest-below') {
+            for (let i = layerIndex - 1; i >= 0; i--) {
+                if (visible(this.layers[i])) {
+                    sourceLayers = [this.layers[i]];
+                    break;
+                }
+            }
+        } else {
+            sourceLayers = this.layers.slice(0, layerIndex).filter(visible);
+        }
+
+        if (sourceLayers.length === 0) {
+            return false;
+        }
+
+        const outsideMask = createColorSpillOutsideMask({
+            lineSources: sourceLayers.map((layer) => ({
+                context: layer.context,
+                opacity: layer.opacity,
+            })),
+            canvasWidth: this.width,
+            canvasHeight: this.height,
+            barrierGrowPx,
+        });
+        this.colorSpillCleanupSession = {
+            targetLayerId: targetLayer.id,
+            targetLayerIndex: layerIndex,
+            outsideMask,
+            selectionMask: this.selection
+                ? getBinaryMask(this.selection, this.width, this.height)
+                : undefined,
+        };
+        return true;
+    }
+
+    applyColorSpillCleanup(x: number, y: number, radius: number): boolean {
+        const session = this.colorSpillCleanupSession;
+        if (!session) {
+            return false;
+        }
+        const targetLayer = this.layers[session.targetLayerIndex];
+        if (!targetLayer || targetLayer.id !== session.targetLayerId) {
+            this.colorSpillCleanupSession = undefined;
+            return false;
+        }
+
+        const start = session.lastPoint ?? { x, y };
+        const distance = Math.hypot(x - start.x, y - start.y);
+        const step = Math.max(1, radius * 0.35);
+        const sampleCount = Math.max(1, Math.ceil(distance / step));
+        let didChange = false;
+
+        for (let i = 1; i <= sampleCount; i++) {
+            const t = sampleCount === 1 ? 1 : i / sampleCount;
+            const sampleX = start.x + (x - start.x) * t;
+            const sampleY = start.y + (y - start.y) * t;
+            const bounds = eraseOutsideColorWithBrush({
+                targetContext: targetLayer.context,
+                outsideMask: session.outsideMask,
+                canvasWidth: this.width,
+                canvasHeight: this.height,
+                x: sampleX,
+                y: sampleY,
+                radius,
+                selectionMask: session.selectionMask,
+            });
+            if (!bounds) {
+                continue;
+            }
+            didChange = true;
+            if (!session.changedBounds) {
+                session.changedBounds = { ...bounds };
+            } else {
+                session.changedBounds.x1 = Math.min(session.changedBounds.x1, bounds.x1);
+                session.changedBounds.y1 = Math.min(session.changedBounds.y1, bounds.y1);
+                session.changedBounds.x2 = Math.max(session.changedBounds.x2, bounds.x2);
+                session.changedBounds.y2 = Math.max(session.changedBounds.y2, bounds.y2);
+            }
+        }
+        session.lastPoint = { x, y };
+        return didChange;
+    }
+
+    endColorSpillCleanup(): void {
+        const session = this.colorSpillCleanupSession;
+        this.colorSpillCleanupSession = undefined;
+        if (!session?.changedBounds || this.klHistory.isPaused()) {
+            return;
+        }
+        const targetLayer = this.layers[session.targetLayerIndex];
+        if (!targetLayer || targetLayer.id !== session.targetLayerId) {
+            return;
+        }
+        this.klHistory.push({
+            layerMap: createLayerMap(this.layers, {
+                layerId: targetLayer.id,
+                attributes: ['tiles'],
+                bounds: session.changedBounds,
+            }),
+        });
+    }
+
     floodFill(
         layerIndex: number, // index of layer to be filled
         x: number, // starting point
@@ -955,36 +1093,6 @@ export class KlCanvas {
             return;
         }
 
-        if (grow < 0) {
-            const targetLayer = this.layers[layerIndex];
-            const lineSources = this.layers
-                .slice(layerIndex + 1)
-                .filter((layer) => layer.isVisible && layer.opacity > 0)
-                .map((layer) => ({ context: layer.context, opacity: layer.opacity }));
-            if (lineSources.length === 0) {
-                return;
-            }
-            const bounds = cleanupColorSpill({
-                targetContext: targetLayer.context,
-                lineSources,
-                canvasWidth: this.width,
-                canvasHeight: this.height,
-                x,
-                y,
-                radius: Math.max(16, Math.min(256, Math.abs(Math.round(grow)))),
-                selectionMask,
-            });
-            if (bounds && !this.klHistory.isPaused()) {
-                this.klHistory.push({
-                    layerMap: createLayerMap(this.layers, {
-                        layerId: targetLayer.id,
-                        attributes: ['tiles'],
-                        bounds,
-                    }),
-                });
-            }
-            return;
-        }
 
         const targetLayer = this.layers[layerIndex];
         let result: ReturnType<typeof floodFillBits>;

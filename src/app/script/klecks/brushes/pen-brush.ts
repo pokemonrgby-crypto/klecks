@@ -13,7 +13,10 @@ import { intersectBounds } from '../../bb/math/math';
 import { getMultiPolyBounds } from '../../bb/multi-polygon/get-multi-polygon-bounds';
 import { TIndexBounds } from '../../bb/bb-types';
 import { SmartStrokeSettings } from '../events/smart-stroke-settings';
-import { analyzeSmartStroke } from '../events/smart-stroke-analyzer';
+import {
+    analyzeSmartStroke,
+    findSmartStrokeTailIntersection,
+} from '../events/smart-stroke-analyzer';
 import { TSmartStroke, TSmartStrokeTrimSuggestion } from '../events/smart-stroke.types';
 
 const ALPHA_CIRCLE = 0;
@@ -22,6 +25,34 @@ const ALPHA_CAL = 2; // calligraphy
 const ALPHA_SQUARE = 3;
 
 const TWO_PI = 2 * Math.PI;
+
+type TPenReplaySettings = {
+    hasOpacityPressure: boolean;
+    hasScatterPressure: boolean;
+    hasSizePressure: boolean;
+    size: number;
+    spacing: number;
+    opacity: number;
+    scatter: number;
+    color: TRgb;
+    alphaId: number;
+    lockLayerAlpha: boolean;
+};
+
+type TEditableSmartStroke = {
+    stroke: TSmartStroke;
+    inputs: TPressureInput[];
+    beforeTiles: Map<number, ImageData>;
+    settings: TPenReplaySettings;
+    selectionPath?: Path2D;
+    selectionBounds?: TIndexBounds;
+    historyChangeCount: number;
+};
+
+type TSmartTrimDecision = {
+    target: 'current' | 'previous';
+    intersection: { x: number; y: number };
+};
 
 export class PenBrush {
     private context: CanvasRenderingContext2D = {} as CanvasRenderingContext2D;
@@ -60,6 +91,8 @@ export class PenBrush {
     private strokeStartTiles = new Map<number, ImageData>();
     private isCapturingStrokeStartTiles: boolean = false;
     private recentRenderedStrokes: TSmartStroke[] = [];
+    private lastEditableStroke: TEditableSmartStroke | undefined;
+    private lastBrushHistoryChangeCount: number | undefined;
 
     private selection: MultiPolygon | undefined;
     private selectionPath: Path2D | undefined;
@@ -93,6 +126,7 @@ export class PenBrush {
 
     private createRenderedSmartStroke(
         inputs: readonly TPressureInput[],
+        brushRadius: number = this.settingSize,
     ): TSmartStroke | undefined {
         if (inputs.length < 3) {
             return undefined;
@@ -124,33 +158,93 @@ export class PenBrush {
             endedAt: samples.length - 1,
             pointerId: 0,
             pointerType: 'pen',
-            brushRadius: this.settingSize,
+            brushRadius,
         };
+    }
+
+    private getTrimLimits(): { maxDistance: number; minConfidence: number } {
+        const mode = SmartStrokeSettings.getMode();
+        if (mode === 'weak') {
+            return {
+                maxDistance: Math.max(16, Math.min(48, this.settingSize * 6)),
+                minConfidence: 0.55,
+            };
+        }
+        if (mode === 'normal') {
+            return {
+                maxDistance: Math.max(32, Math.min(96, this.settingSize * 12)),
+                minConfidence: 0.25,
+            };
+        }
+        if (mode === 'strong') {
+            return {
+                maxDistance: Math.max(56, Math.min(180, this.settingSize * 20)),
+                minConfidence: 0.06,
+            };
+        }
+        return { maxDistance: 0, minConfidence: Number.POSITIVE_INFINITY };
     }
 
     private getRenderedTrimSuggestion(
         current: TSmartStroke,
     ): TSmartStrokeTrimSuggestion | undefined {
-        const mode = SmartStrokeSettings.getMode();
-        if (mode === 'off' || this.recentRenderedStrokes.length === 0) {
+        if (SmartStrokeSettings.getMode() === 'off' || this.recentRenderedStrokes.length === 0) {
             return undefined;
         }
 
-        const maxTrimDistance =
-            mode === 'weak'
-                ? Math.max(8, Math.min(24, this.settingSize * 4))
-                : mode === 'normal'
-                  ? Math.max(12, Math.min(48, this.settingSize * 8))
-                  : Math.max(18, Math.min(72, this.settingSize * 12));
-        const minConfidence = mode === 'weak' ? 0.45 : mode === 'normal' ? 0.15 : 0.03;
+        const limits = this.getTrimLimits();
         const analysis = analyzeSmartStroke(
             current,
             this.recentRenderedStrokes.slice(-16),
-            { maxTrimDistance },
+            { maxTrimDistance: limits.maxDistance },
         );
         const suggestion = analysis.suggestions.find((item) => item.type === 'trim');
-        return suggestion?.type === 'trim' && suggestion.confidence >= minConfidence
+        return suggestion?.type === 'trim' && suggestion.confidence >= limits.minConfidence
             ? suggestion
+            : undefined;
+    }
+
+    private getSmartTrimDecision(current: TSmartStroke): TSmartTrimDecision | undefined {
+        const currentSuggestion = this.getRenderedTrimSuggestion(current);
+        if (SmartStrokeSettings.getTarget() !== 'previous' || !this.lastEditableStroke) {
+            return currentSuggestion
+                ? { target: 'current', intersection: currentSuggestion.intersection }
+                : undefined;
+        }
+
+        if (this.lastEditableStroke.historyChangeCount !== this.klHistory.getChangeCount()) {
+            this.lastEditableStroke = undefined;
+            return currentSuggestion
+                ? { target: 'current', intersection: currentSuggestion.intersection }
+                : undefined;
+        }
+
+        const crossing = findSmartStrokeTailIntersection(current, this.lastEditableStroke.stroke);
+        if (!crossing) {
+            return currentSuggestion
+                ? { target: 'current', intersection: currentSuggestion.intersection }
+                : undefined;
+        }
+
+        const limits = this.getTrimLimits();
+        const previousConfidence = Math.max(
+            0,
+            1 - crossing.referenceTailLength / Math.max(1, limits.maxDistance),
+        );
+        const previousQualifies =
+            crossing.referenceTailLength > 0.5 &&
+            crossing.referenceTailLength <= limits.maxDistance &&
+            previousConfidence >= limits.minConfidence;
+
+        if (
+            previousQualifies &&
+            (!currentSuggestion || crossing.referenceTailLength < currentSuggestion.overshootLength * 0.9)
+        ) {
+            return { target: 'previous', intersection: crossing.intersection };
+        }
+
+        return currentSuggestion
+            ? { target: 'current', intersection: currentSuggestion.intersection }
             : undefined;
     }
 
@@ -164,8 +258,73 @@ export class PenBrush {
         }
     }
 
-    private createTrimmedInputArr(trimPoint: { x: number; y: number }): TPressureInput[] | undefined {
-        if (this.inputArr.length < 3) {
+    private captureReplaySettings(): TPenReplaySettings {
+        return {
+            hasOpacityPressure: this.settingHasOpacityPressure,
+            hasScatterPressure: this.settingHasScatterPressure,
+            hasSizePressure: this.settingHasSizePressure,
+            size: this.settingSize,
+            spacing: this.settingSpacing,
+            opacity: this.settingOpacity,
+            scatter: this.settingScatter,
+            color: { ...this.settingColor },
+            alphaId: this.settingAlphaId,
+            lockLayerAlpha: this.settingLockLayerAlpha,
+        };
+    }
+
+    private applyReplaySettings(settings: TPenReplaySettings): void {
+        this.settingHasOpacityPressure = settings.hasOpacityPressure;
+        this.settingHasScatterPressure = settings.hasScatterPressure;
+        this.settingHasSizePressure = settings.hasSizePressure;
+        this.settingSize = settings.size;
+        this.settingSpacing = settings.spacing;
+        this.settingOpacity = settings.opacity;
+        this.settingScatter = settings.scatter;
+        this.settingColor = { ...settings.color };
+        this.settingColorStr = `rgb(${settings.color.r},${settings.color.g},${settings.color.b})`;
+        this.settingAlphaId = settings.alphaId;
+        this.settingLockLayerAlpha = settings.lockLayerAlpha;
+        this.updateAlphaCanvas();
+    }
+
+    private restoreTileMap(tileMap: Map<number, ImageData>): void {
+        const tilesX = Math.ceil(this.context.canvas.width / HISTORY_TILE_SIZE);
+        tileMap.forEach((tile, index) => {
+            const col = index % tilesX;
+            const row = Math.floor(index / tilesX);
+            this.context.putImageData(tile, col * HISTORY_TILE_SIZE, row * HISTORY_TILE_SIZE);
+        });
+    }
+
+    private snapshotTileIndices(indices: Iterable<number>): Map<number, ImageData> {
+        const result = new Map<number, ImageData>();
+        const canvas = this.context.canvas;
+        const tilesX = Math.ceil(canvas.width / HISTORY_TILE_SIZE);
+        for (const index of indices) {
+            const col = index % tilesX;
+            const row = Math.floor(index / tilesX);
+            result.set(index, getTileFromCanvas(canvas, col, row));
+        }
+        return result;
+    }
+
+    private changedTilesFromMaps(...maps: Map<number, ImageData>[]): boolean[] {
+        const result: boolean[] = [];
+        maps.forEach((map) => {
+            map.forEach((_value, index) => {
+                result[index] = true;
+            });
+        });
+        return result;
+    }
+
+    private createTrimmedInputArrFrom(
+        inputs: readonly TPressureInput[],
+        trimPoint: { x: number; y: number },
+        brushSize: number,
+    ): TPressureInput[] | undefined {
+        if (inputs.length < 3) {
             return undefined;
         }
 
@@ -177,11 +336,9 @@ export class PenBrush {
               }
             | undefined;
 
-        // Search from the end. If a self-crossing creates two equally close
-        // projections, the later segment is the one that represents the tail.
-        for (let i = this.inputArr.length - 2; i >= 1; i--) {
-            const a = this.inputArr[i];
-            const b = this.inputArr[i + 1];
+        for (let i = inputs.length - 2; i >= 0; i--) {
+            const a = inputs[i];
+            const b = inputs[i + 1];
             const dx = b.x - a.x;
             const dy = b.y - a.y;
             const lenSq = dx * dx + dy * dy;
@@ -201,57 +358,209 @@ export class PenBrush {
             }
         }
 
-        const maxProjectionDistance = Math.max(3, Math.min(12, this.settingSize * 1.5));
+        const maxProjectionDistance = Math.max(4, Math.min(24, brushSize * 2.5));
         if (!best || Math.sqrt(best.distanceSq) > maxProjectionDistance) {
             return undefined;
         }
 
-        const a = this.inputArr[best.index];
-        const b = this.inputArr[best.index + 1];
+        const a = inputs[best.index];
+        const b = inputs[best.index + 1];
         const pressure = BB.mix(a.pressure, b.pressure, best.t);
-        const result = this.inputArr.slice(0, best.index + 1).map((item) => ({ ...item }));
+        const result = inputs.slice(0, best.index + 1).map((item) => ({ ...item }));
         result.push({ x: trimPoint.x, y: trimPoint.y, pressure });
-
-        // Avoid a correction that effectively keeps the complete stroke.
-        if (result.length >= this.inputArr.length && best.t > 0.98) {
+        if (result.length >= inputs.length && best.t > 0.98) {
             return undefined;
         }
         return result;
     }
 
-    private tryApplySmartTrim(trimPoint: { x: number; y: number }): boolean {
-        // First version is deliberately limited to the deterministic round pen.
-        // Scatter would replay with different random dots, and textured/square
-        // tips need separate visual QA before they are safe to rewrite.
-        if (this.settingAlphaId !== ALPHA_CIRCLE || this.settingScatter !== 0) {
-            return false;
+    private replayStrokeRaster(p: {
+        inputs: readonly TPressureInput[];
+        settings: TPenReplaySettings;
+        selectionPath?: Path2D;
+        selectionBounds?: TIndexBounds;
+    }): boolean[] {
+        if (p.inputs.length < 2 || p.settings.alphaId !== ALPHA_CIRCLE || p.settings.scatter !== 0) {
+            return [];
         }
 
-        const correctedInputs = this.createTrimmedInputArr(trimPoint);
-        if (!correctedInputs || correctedInputs.length < 2 || this.strokeStartTiles.size === 0) {
-            return false;
+        const savedSettings = this.captureReplaySettings();
+        const savedSelection = this.selection;
+        const savedSelectionPath = this.selectionPath;
+        const savedSelectionBounds = this.selectionBounds;
+        const savedChangedTiles = this.changedTiles;
+        const savedStrokeStartTiles = this.strokeStartTiles;
+        const savedIsCapturing = this.isCapturingStrokeStartTiles;
+        const savedHasDrawnDot = this.hasDrawnDot;
+        const savedLineToolLastDot = this.lineToolLastDot;
+        const savedLastInput = { ...this.lastInput };
+        const savedLastInput2 = { ...this.lastInput2 };
+        const savedInputArr = this.inputArr;
+        const savedInputIsDrawing = this.inputIsDrawing;
+        const savedBezierLine = this.bezierLine;
+
+        try {
+            this.applyReplaySettings(p.settings);
+            this.selection = undefined;
+            this.selectionPath = p.selectionPath;
+            this.selectionBounds = p.selectionBounds;
+            this.changedTiles = [];
+            this.strokeStartTiles = new Map();
+            this.isCapturingStrokeStartTiles = false;
+            this.hasDrawnDot = false;
+            this.inputArr = [];
+            this.inputIsDrawing = true;
+            this.bezierLine = null;
+
+            const first = p.inputs[0];
+            let pressure = BB.clamp(first.pressure, 0, 1);
+            let localOpacity = this.calcOpacity(pressure);
+            let localSize = this.settingHasSizePressure
+                ? Math.max(0.1, pressure * this.settingSize)
+                : Math.max(0.1, this.settingSize);
+            this.context.save();
+            this.selectionPath && this.context.clip(this.selectionPath);
+            this.drawDot(first.x, first.y, localSize, localOpacity, 0);
+            this.context.restore();
+            this.lineToolLastDot = localSize * this.settingSpacing;
+            this.lastInput = { x: first.x, y: first.y, pressure };
+            this.lastInput2 = { x: first.x, y: first.y, pressure };
+            this.inputArr = [{ ...first }];
+
+            for (let i = 1; i < p.inputs.length; i++) {
+                const item = p.inputs[i];
+                pressure = BB.clamp(item.pressure, 0, 1);
+                localSize = this.settingHasSizePressure
+                    ? Math.max(0.1, this.lastInput.pressure * this.settingSize)
+                    : Math.max(0.1, this.settingSize);
+                this.context.save();
+                this.selectionPath && this.context.clip(this.selectionPath);
+                this.continueLine(item.x, item.y, localSize, this.lastInput.pressure);
+                this.context.restore();
+                this.lastInput2 = { ...this.lastInput };
+                this.lastInput = { x: item.x, y: item.y, pressure };
+                this.inputArr.push({ ...item });
+            }
+
+            localSize = this.settingHasSizePressure
+                ? Math.max(0.1, this.lastInput.pressure * this.settingSize)
+                : Math.max(0.1, this.settingSize);
+            this.context.save();
+            this.selectionPath && this.context.clip(this.selectionPath);
+            this.continueLine(null, null, localSize, this.lastInput.pressure);
+            this.context.restore();
+            this.inputIsDrawing = false;
+            this.bezierLine = null;
+            return [...this.changedTiles];
+        } finally {
+            this.applyReplaySettings(savedSettings);
+            this.selection = savedSelection;
+            this.selectionPath = savedSelectionPath;
+            this.selectionBounds = savedSelectionBounds;
+            this.changedTiles = savedChangedTiles;
+            this.strokeStartTiles = savedStrokeStartTiles;
+            this.isCapturingStrokeStartTiles = savedIsCapturing;
+            this.hasDrawnDot = savedHasDrawnDot;
+            this.lineToolLastDot = savedLineToolLastDot;
+            this.lastInput = savedLastInput;
+            this.lastInput2 = savedLastInput2;
+            this.inputArr = savedInputArr;
+            this.inputIsDrawing = savedInputIsDrawing;
+            this.bezierLine = savedBezierLine;
+        }
+    }
+
+    private applyCurrentSmartTrim(p: {
+        inputs: readonly TPressureInput[];
+        beforeTiles: Map<number, ImageData>;
+        settings: TPenReplaySettings;
+        selectionPath?: Path2D;
+        selectionBounds?: TIndexBounds;
+        intersection: { x: number; y: number };
+    }): TPressureInput[] | undefined {
+        const trimmed = this.createTrimmedInputArrFrom(
+            p.inputs,
+            p.intersection,
+            p.settings.size,
+        );
+        if (!trimmed || p.beforeTiles.size === 0) {
+            return undefined;
+        }
+        this.restoreTileMap(p.beforeTiles);
+        this.replayStrokeRaster({
+            inputs: trimmed,
+            settings: p.settings,
+            selectionPath: p.selectionPath,
+            selectionBounds: p.selectionBounds,
+        });
+        this.changedTiles = this.changedTilesFromMaps(p.beforeTiles);
+        return trimmed;
+    }
+
+    private applyPreviousSmartTrim(p: {
+        currentInputs: readonly TPressureInput[];
+        currentBeforeTiles: Map<number, ImageData>;
+        currentSettings: TPenReplaySettings;
+        currentSelectionPath?: Path2D;
+        currentSelectionBounds?: TIndexBounds;
+        intersection: { x: number; y: number };
+    }): Map<number, ImageData> | undefined {
+        const previous = this.lastEditableStroke;
+        if (!previous || previous.beforeTiles.size === 0 || p.currentBeforeTiles.size === 0) {
+            return undefined;
+        }
+        const trimmedPrevious = this.createTrimmedInputArrFrom(
+            previous.inputs,
+            p.intersection,
+            previous.settings.size,
+        );
+        if (!trimmedPrevious) {
+            return undefined;
         }
 
-        this.restoreStrokeStartTiles();
+        // Remove the current stroke first, then roll the immediately previous
+        // stroke back to its own pre-stroke pixels. No older stroke is rewritten.
+        this.restoreTileMap(p.currentBeforeTiles);
+        this.restoreTileMap(previous.beforeTiles);
+        this.replayStrokeRaster({
+            inputs: trimmedPrevious,
+            settings: previous.settings,
+            selectionPath: previous.selectionPath,
+            selectionBounds: previous.selectionBounds,
+        });
 
-        // Reset only current-stroke runtime state, then replay from the exact
-        // pre-stroke pixels. startLine will begin a fresh tile snapshot used by
-        // the normal history commit below.
-        this.inputIsDrawing = false;
-        this.bezierLine = null;
-        this.hasDrawnDot = false;
-        this.inputArr = [];
-        this.changedTiles = [];
-        this.strokeStartTiles.clear();
-        this.isCapturingStrokeStartTiles = false;
+        // The current stroke's future rollback baseline must include the now
+        // corrected previous stroke, otherwise a later correction would revive
+        // the old overshoot.
+        const correctedCurrentBefore = this.snapshotTileIndices(p.currentBeforeTiles.keys());
+        this.replayStrokeRaster({
+            inputs: p.currentInputs,
+            settings: p.currentSettings,
+            selectionPath: p.currentSelectionPath,
+            selectionBounds: p.currentSelectionBounds,
+        });
+        this.changedTiles = this.changedTilesFromMaps(previous.beforeTiles, p.currentBeforeTiles);
 
-        const first = correctedInputs[0];
-        this.startLine(first.x, first.y, first.pressure);
-        for (let i = 1; i < correctedInputs.length; i++) {
-            const item = correctedInputs[i];
-            this.goLine(item.x, item.y, item.pressure);
+        const correctedPreviousStroke = this.createRenderedSmartStroke(
+            trimmedPrevious,
+            previous.settings.size,
+        );
+        const historyIndex = this.recentRenderedStrokes.lastIndexOf(previous.stroke);
+        if (correctedPreviousStroke && historyIndex >= 0) {
+            this.recentRenderedStrokes[historyIndex] = correctedPreviousStroke;
         }
-        return true;
+        return correctedCurrentBefore;
+    }
+
+    private invalidateSmartHistoryIfNeeded(): void {
+        const changeCount = this.klHistory.getChangeCount();
+        if (
+            this.lastBrushHistoryChangeCount !== undefined &&
+            changeCount !== this.lastBrushHistoryChangeCount
+        ) {
+            this.recentRenderedStrokes = [];
+            this.lastEditableStroke = undefined;
+        }
     }
 
     private updateChangedTiles(bounds: TIndexBounds) {
@@ -466,6 +775,7 @@ export class PenBrush {
     // ---- interface ----
 
     startLine(x: number, y: number, p: number): void {
+        this.invalidateSmartHistoryIfNeeded();
         this.selection = this.klHistory.getComposed().selection.value;
         this.selectionPath = this.selection ? getSelectionPath2d(this.selection) : undefined;
         this.selectionBounds = this.selection
@@ -536,43 +846,90 @@ export class PenBrush {
     }
 
     endLine(): void {
-        const renderedStroke = this.createRenderedSmartStroke(this.inputArr);
-        const trimSuggestion = renderedStroke
-            ? this.getRenderedTrimSuggestion(renderedStroke)
+        const currentInputs = this.inputArr.map((item) => ({ ...item }));
+        const currentSettings = this.captureReplaySettings();
+        const currentSelectionPath = this.selectionPath;
+        const currentSelectionBounds = this.selectionBounds
+            ? { ...this.selectionBounds }
             : undefined;
-        if (trimSuggestion) {
-            this.tryApplySmartTrim(trimSuggestion.intersection);
-        }
+        const originalCurrentBeforeTiles = new Map(this.strokeStartTiles);
 
-        const localSize = this.settingHasSizePressure
+        // Finish the normal raster stroke first. Smart correction then rewrites
+        // a bounded set of touched tiles and commits the final pixels once.
+        let localSize = this.settingHasSizePressure
             ? Math.max(0.1, this.lastInput.pressure * this.settingSize)
             : Math.max(0.1, this.settingSize);
         this.context.save();
         this.selectionPath && this.context.clip(this.selectionPath);
         this.continueLine(null, null, localSize, this.lastInput.pressure);
         this.context.restore();
-
         this.inputIsDrawing = false;
 
         if (this.settingAlphaId === ALPHA_SQUARE && !this.hasDrawnDot) {
-            // find max pressure input, use that one
             let maxInput = this.inputArr[0];
             this.inputArr.forEach((item) => {
                 if (item.pressure > maxInput.pressure) {
                     maxInput = item;
                 }
             });
-
             this.context.save();
             this.selectionPath && this.context.clip(this.selectionPath);
-            const p = BB.clamp(maxInput.pressure, 0, 1);
-            const localOpacity = this.calcOpacity(p);
-            const localScatter = this.calcScatter(p);
-            this.drawDot(maxInput.x, maxInput.y, localSize, localOpacity, localScatter, 0);
+            const pressure = BB.clamp(maxInput.pressure, 0, 1);
+            localSize = this.settingHasSizePressure
+                ? Math.max(0.1, pressure * this.settingSize)
+                : Math.max(0.1, this.settingSize);
+            this.drawDot(
+                maxInput.x,
+                maxInput.y,
+                localSize,
+                this.calcOpacity(pressure),
+                this.calcScatter(pressure),
+                0,
+            );
             this.context.restore();
         }
-
         this.bezierLine = null;
+
+        let committedInputs = currentInputs;
+        let editableBeforeTiles = originalCurrentBeforeTiles;
+        const renderedStroke = this.createRenderedSmartStroke(
+            currentInputs,
+            currentSettings.size,
+        );
+        if (
+            renderedStroke &&
+            SmartStrokeSettings.getMode() !== 'off' &&
+            currentSettings.alphaId === ALPHA_CIRCLE &&
+            currentSettings.scatter === 0 &&
+            originalCurrentBeforeTiles.size > 0
+        ) {
+            const decision = this.getSmartTrimDecision(renderedStroke);
+            if (decision?.target === 'previous') {
+                const correctedBefore = this.applyPreviousSmartTrim({
+                    currentInputs,
+                    currentBeforeTiles: originalCurrentBeforeTiles,
+                    currentSettings,
+                    currentSelectionPath,
+                    currentSelectionBounds,
+                    intersection: decision.intersection,
+                });
+                if (correctedBefore) {
+                    editableBeforeTiles = correctedBefore;
+                }
+            } else if (decision?.target === 'current') {
+                const trimmed = this.applyCurrentSmartTrim({
+                    inputs: currentInputs,
+                    beforeTiles: originalCurrentBeforeTiles,
+                    settings: currentSettings,
+                    selectionPath: currentSelectionPath,
+                    selectionBounds: currentSelectionBounds,
+                    intersection: decision.intersection,
+                });
+                if (trimmed) {
+                    committedInputs = trimmed;
+                }
+            }
+        }
 
         if (this.changedTiles.some((item) => item)) {
             this.klHistory.push(
@@ -583,7 +940,31 @@ export class PenBrush {
             );
         }
 
-        this.rememberRenderedStroke(this.createRenderedSmartStroke(this.inputArr));
+        const committedStroke = this.createRenderedSmartStroke(
+            committedInputs,
+            currentSettings.size,
+        );
+        this.rememberRenderedStroke(committedStroke);
+        this.lastBrushHistoryChangeCount = this.klHistory.getChangeCount();
+        if (
+            committedStroke &&
+            SmartStrokeSettings.getMode() !== 'off' &&
+            currentSettings.alphaId === ALPHA_CIRCLE &&
+            currentSettings.scatter === 0 &&
+            editableBeforeTiles.size > 0
+        ) {
+            this.lastEditableStroke = {
+                stroke: committedStroke,
+                inputs: committedInputs.map((item) => ({ ...item })),
+                beforeTiles: editableBeforeTiles,
+                settings: currentSettings,
+                selectionPath: currentSelectionPath,
+                selectionBounds: currentSelectionBounds,
+                historyChangeCount: this.klHistory.getChangeCount(),
+            };
+        } else {
+            this.lastEditableStroke = undefined;
+        }
 
         this.hasDrawnDot = false;
         this.inputArr = [];
@@ -673,6 +1054,8 @@ export class PenBrush {
     setContext(c: CanvasRenderingContext2D): void {
         if (this.context.canvas && this.context.canvas !== c.canvas) {
             this.recentRenderedStrokes = [];
+            this.lastEditableStroke = undefined;
+            this.lastBrushHistoryChangeCount = undefined;
         }
         this.context = c;
     }
