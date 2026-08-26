@@ -24,8 +24,13 @@
 - coalesced sample 여부
 - pointer id
 - 입력 종류(`pen`, `touch`, `mouse`)
+- 브라우저/기기가 제공하는 경우 펜 기울기(`tiltX`, `tiltY`)
+- 펜 회전(`twist`)
+- tangential pressure
+- 접촉 폭/높이
+- raw `buttons` bitmask
 
-브라우저/기기에서 제공하는 스타일러스 기울기·회전·접촉 크기 같은 메타데이터도 내부 Pointer Event 타입에서 보존할 수 있도록 확장하기 시작했습니다.
+특히 원본에서 읽고도 최종 coalesced 이벤트로 전달하지 않던 개별 pressure 값을 끝까지 보존하도록 수정했습니다. 따라서 고주사율 스타일러스 입력을 스마트 스트로크 데이터로 사용할 때 중간 샘플의 필압 변화도 유지할 수 있습니다.
 
 ### 3. 스마트 스트로크 후처리 기반
 
