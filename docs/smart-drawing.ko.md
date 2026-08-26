@@ -30,7 +30,7 @@
 - coalesced sample 여부
 - pointer id
 - pointer type (`pen`, `touch`, `mouse`)
-- 지원 가능한 경우 스타일러스 메타데이터를 담을 수 있는 필드
+- 브라우저/기기가 제공하는 경우 스타일러스 기울기, 회전, 접촉 크기 등의 메타데이터
 
 `SmartStrokeAnalyzer`는 현재 다음 두 후보를 계산한다.
 
@@ -42,6 +42,19 @@
   - 그 진행 방향 앞쪽에 가까운 최근 스트로크 endpoint가 있으면 연결 후보로 본다.
 
 분석 결과에는 confidence가 포함된다.
+
+### 성능 원칙
+
+스마트 스트로크 분석 때문에 펜 입력이 느려지면 기능의 의미가 없으므로, 현재 구현은 다음 제한을 둔다.
+
+- 펜을 뗄 때마다 교차 분석을 자동 실행하지 않는다.
+- 평소에는 벡터 sidecar 기록만 수행한다.
+- 분석은 스마트 보정 기능이 명시적으로 요청할 때만 실행한다.
+- 분석 시 기본적으로 직전 최대 16개 스트로크만 참고한다.
+- 보관하는 최근 스트로크는 최대 32개다.
+- 한 스트로크가 2048개 샘플을 넘으면 시작점/끝점을 보존하면서 중간 샘플을 단계적으로 줄인다.
+
+이 값들은 실제 Galaxy Tab 테스트 후 조정할 수 있다.
 
 ### 아직 자동 적용하지 않는 이유
 
@@ -121,11 +134,11 @@
 
 원본 Klecks는 Pointer Events의 `pen` 입력과 pressure를 이미 처리한다. 또한 펜 사용 직후 잘못 들어오는 mouse event를 무시하는 stylus workaround도 존재한다.
 
-이 포크에서는 스마트 스트로크를 위해 pointer type과 pressure를 벡터 sidecar에 보관하고, 스타일러스용 추가 메타데이터 타입을 확장했다.
+이 포크에서는 스마트 스트로크를 위해 pointer type과 pressure를 벡터 sidecar에 보관하고, 스타일러스용 추가 메타데이터 타입을 확장했다. 원본에서 coalesced sample의 pressure를 읽고도 최종 이벤트에 넣지 않던 경로도 수정해 개별 샘플 필압을 끝까지 전달하도록 했다.
 
 ### 다음 단계 후보
 
-- coalesced pointer sample마다 실제 pressure/tilt를 끝까지 보존하는지 실기기 확인
+- coalesced pointer sample마다 실제 pressure/tilt가 Galaxy Tab 브라우저/WebView에서 기대대로 들어오는지 실기기 확인
 - S Pen 측면 버튼 이벤트가 Galaxy Tab 브라우저/WebView에서 어떤 `button/buttons` 값으로 오는지 확인
 - 측면 버튼 동작을 설정 가능하게 만들기
   - Undo
