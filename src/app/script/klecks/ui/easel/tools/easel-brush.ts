@@ -267,6 +267,10 @@ export class EaselBrush implements TEaselTool {
         return this.smartStrokeRecorder.getLastStroke();
     }
 
+    analyzeLastSmartStroke(): TSmartStrokeAnalysis {
+        return this.smartStrokeRecorder.analyzeLastStroke();
+    }
+
     getLastSmartStrokeAnalysis(): TSmartStrokeAnalysis {
         return this.smartStrokeRecorder.getLastAnalysis();
     }
