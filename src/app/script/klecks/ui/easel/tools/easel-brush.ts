@@ -71,6 +71,14 @@ export class EaselBrush implements TEaselTool {
             isCoalesced: e.isCoalesced,
             pointerId: e.pointerId,
             pointerType: e.pointerType,
+            tiltX: e.tiltX,
+            tiltY: e.tiltY,
+            twist: e.twist,
+            tangentialPressure: e.tangentialPressure,
+            contactWidth: e.contactWidth,
+            contactHeight: e.contactHeight,
+            isPrimary: e.isPrimary,
+            buttons: e.buttons,
         };
         if (isStart) {
             this.smartStrokeRecorder.begin(sample, this.radius);
