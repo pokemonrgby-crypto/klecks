@@ -38,6 +38,20 @@ export type TSmartStrokeTrimSuggestion = {
     referenceStrokeIndex: number;
 };
 
+/**
+ * One crossing between the current stroke and one reference stroke, including
+ * how much line remains after the crossing on both strokes.
+ */
+export type TSmartStrokeTailIntersection = {
+    intersection: { x: number; y: number };
+    currentSegmentIndex: number;
+    currentSegmentT: number;
+    currentTailLength: number;
+    referenceSegmentIndex: number;
+    referenceSegmentT: number;
+    referenceTailLength: number;
+};
+
 export type TSmartStrokeConnectSuggestion = {
     type: 'connect';
     confidence: number;

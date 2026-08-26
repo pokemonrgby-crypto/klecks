@@ -680,6 +680,44 @@ export class KlApp {
                         );
                         this.easel.requestRender();
                     },
+                    getIsCleanupMode: () => fillUi.getIsColorCleanup(),
+                    getCleanupRadius: () => fillUi.getColorCleanupRadius(),
+                    onCleanupStart: (p) => {
+                        const didStart = this.klCanvas.beginColorSpillCleanup(
+                            currentLayer.index,
+                            fillUi.getColorCleanupLineSourceMode(),
+                            fillUi.getColorCleanupBarrierGrow(),
+                        );
+                        if (!didStart) {
+                            this.statusOverlay.out('선화 기준 레이어를 찾지 못했습니다.', true);
+                            return false;
+                        }
+                        if (
+                            this.klCanvas.applyColorSpillCleanup(
+                                p.x,
+                                p.y,
+                                fillUi.getColorCleanupRadius(),
+                            )
+                        ) {
+                            this.easel.requestRender();
+                        }
+                        return true;
+                    },
+                    onCleanupMove: (p) => {
+                        if (
+                            this.klCanvas.applyColorSpillCleanup(
+                                p.x,
+                                p.y,
+                                fillUi.getColorCleanupRadius(),
+                            )
+                        ) {
+                            this.easel.requestRender();
+                        }
+                    },
+                    onCleanupEnd: () => {
+                        this.klCanvas.endColorSpillCleanup();
+                        this.easel.requestRender();
+                    },
                 }),
                 gradient: new EaselGradient({
                     onDown: (p, angleRad) => {

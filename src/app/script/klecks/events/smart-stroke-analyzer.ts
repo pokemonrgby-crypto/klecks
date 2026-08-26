@@ -4,6 +4,7 @@ import {
     TSmartStrokeConnectSuggestion,
     TSmartStrokeCorrectionSuggestion,
     TSmartStrokeSample,
+    TSmartStrokeTailIntersection,
     TSmartStrokeTrimSuggestion,
 } from './smart-stroke.types';
 
@@ -73,6 +74,68 @@ function getTailLength(samples: TSmartStrokeSample[], segmentIndex: number, t: n
         result += distance(samples[i], samples[i + 1]);
     }
     return result;
+}
+
+/**
+ * Finds the crossing that is closest to either stroke end. Unlike the normal
+ * trim suggestion this exposes the remaining tail on both strokes, allowing a
+ * caller to decide whether the just-drawn stroke or the immediately previous
+ * stroke is the accidental overshoot.
+ */
+export function findSmartStrokeTailIntersection(
+    current: TSmartStroke,
+    reference: TSmartStroke,
+): TSmartStrokeTailIntersection | undefined {
+    if (current.samples.length < 3 || reference.samples.length < 2) {
+        return undefined;
+    }
+
+    let best:
+        | {
+              value: TSmartStrokeTailIntersection;
+              score: number;
+          }
+        | undefined;
+
+    for (let i = 1; i < current.samples.length - 1; i++) {
+        for (let j = 0; j < reference.samples.length - 1; j++) {
+            const hit = segmentIntersection(
+                current.samples[i],
+                current.samples[i + 1],
+                reference.samples[j],
+                reference.samples[j + 1],
+            );
+            if (!hit) {
+                continue;
+            }
+
+            const currentTailLength = getTailLength(current.samples, i, hit.t);
+            const referenceTailLength = getTailLength(reference.samples, j, hit.u);
+            const currentCandidate =
+                currentTailLength > 0.5 ? currentTailLength : Number.POSITIVE_INFINITY;
+            const referenceCandidate =
+                referenceTailLength > 0.5 ? referenceTailLength : Number.POSITIVE_INFINITY;
+            const score = Math.min(currentCandidate, referenceCandidate);
+            if (!Number.isFinite(score)) {
+                continue;
+            }
+
+            const value: TSmartStrokeTailIntersection = {
+                intersection: { x: hit.x, y: hit.y },
+                currentSegmentIndex: i,
+                currentSegmentT: hit.t,
+                currentTailLength,
+                referenceSegmentIndex: j,
+                referenceSegmentT: hit.u,
+                referenceTailLength,
+            };
+            if (!best || score < best.score) {
+                best = { value, score };
+            }
+        }
+    }
+
+    return best?.value;
 }
 
 function getEndDirection(samples: TSmartStrokeSample[]): TPoint | undefined {
@@ -216,10 +279,6 @@ function findConnectSuggestion(
 
 /**
  * Looks only at vector metadata. It does not mutate the raster layer.
- *
- * The first implementation deliberately returns suggestions instead of
- * applying them. This keeps false positives harmless while we collect real
- * drawing examples and tune the thresholds/model later.
  */
 export function analyzeSmartStroke(
     current: TSmartStroke,
