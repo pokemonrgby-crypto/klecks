@@ -397,7 +397,10 @@ export class PenBrush {
 
         this.changedTiles = [];
         this.strokeStartTiles.clear();
-        this.isCapturingStrokeStartTiles = true;
+        this.isCapturingStrokeStartTiles =
+            SmartStrokeSettings.getMode() !== 'off' &&
+            this.settingAlphaId === ALPHA_CIRCLE &&
+            this.settingScatter === 0;
         p = BB.clamp(p, 0, 1);
         const localOpacity = this.calcOpacity(p);
         const localSize = this.settingHasSizePressure
@@ -441,7 +444,6 @@ export class PenBrush {
         this.context.save();
         this.selectionPath && this.context.clip(this.selectionPath);
         this.continueLine(x, y, localSize, this.lastInput.pressure);
-
         this.context.restore();
 
         this.lastInput.x = x;
