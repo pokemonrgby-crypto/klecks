@@ -10,6 +10,11 @@ import { TBrushUi } from '../kl-types';
 import { LANG, LANGUAGE_STRINGS } from '../../language/language';
 import { Options } from '../ui/components/options';
 import { PenBrush } from '../brushes/pen-brush';
+import { Select } from '../ui/components/select';
+import {
+    SmartStrokeSettings,
+    TSmartStrokeMode,
+} from '../events/smart-stroke-settings';
 
 export const penBrushUi = (function () {
     const brushInterface = {
@@ -116,6 +121,34 @@ export const penBrushUi = (function () {
             },
             name: 'lock-alpha-toggle',
         });
+
+        const smartStrokeSelect = new Select<TSmartStrokeMode>({
+            optionArr: [
+                ['off', '끔'],
+                ['weak', '약하게'],
+                ['normal', '보통'],
+                ['strong', '강하게'],
+            ],
+            initValue: SmartStrokeSettings.getMode(),
+            onChange: (mode) => SmartStrokeSettings.setMode(mode),
+            title: '선 끝이 기존 선을 짧게 지나친 경우 자동으로 교차점까지 정리합니다.',
+            name: 'smart-stroke-mode',
+            css: {
+                minWidth: 92,
+            },
+        });
+        const smartStrokeRow = BB.el({
+            tagName: 'label',
+            content: '스마트 선 보정&nbsp;',
+            title: '현재는 일반 원형 펜의 짧은 삐져나감 자동 자르기를 지원합니다.',
+            css: {
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginTop: 10,
+            },
+        });
+        smartStrokeRow.append(smartStrokeSelect.getElement());
 
         const spacingSpline = new BB.SplineInterpolator([
             [0, 15],
@@ -243,6 +276,7 @@ export const penBrushUi = (function () {
                         marginTop: 10,
                     },
                 }),
+                smartStrokeRow,
             );
         }
 
