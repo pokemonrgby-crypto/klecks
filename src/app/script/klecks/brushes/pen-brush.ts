@@ -13,6 +13,8 @@ import { intersectBounds } from '../../bb/math/math';
 import { getMultiPolyBounds } from '../../bb/multi-polygon/get-multi-polygon-bounds';
 import { TIndexBounds } from '../../bb/bb-types';
 import { SmartStrokeSettings } from '../events/smart-stroke-settings';
+import { analyzeSmartStroke } from '../events/smart-stroke-analyzer';
+import { TSmartStroke, TSmartStrokeTrimSuggestion } from '../events/smart-stroke.types';
 
 const ALPHA_CIRCLE = 0;
 const ALPHA_CHALK = 1;
@@ -57,6 +59,7 @@ export class PenBrush {
     // cloning a full high-resolution layer for every pen-down.
     private strokeStartTiles = new Map<number, ImageData>();
     private isCapturingStrokeStartTiles: boolean = false;
+    private recentRenderedStrokes: TSmartStroke[] = [];
 
     private selection: MultiPolygon | undefined;
     private selectionPath: Path2D | undefined;
@@ -85,6 +88,80 @@ export class PenBrush {
             const row = Math.floor(index / tilesX);
             this.context.putImageData(tile, col * HISTORY_TILE_SIZE, row * HISTORY_TILE_SIZE);
         });
+    }
+
+
+    private createRenderedSmartStroke(
+        inputs: readonly TPressureInput[],
+    ): TSmartStroke | undefined {
+        if (inputs.length < 3) {
+            return undefined;
+        }
+
+        const maxSamples = 1024;
+        const stride = Math.max(1, Math.ceil(inputs.length / maxSamples));
+        const compacted: TPressureInput[] = [];
+        for (let i = 0; i < inputs.length; i += stride) {
+            compacted.push(inputs[i]);
+        }
+        const last = inputs[inputs.length - 1];
+        if (compacted[compacted.length - 1] !== last) {
+            compacted.push(last);
+        }
+
+        const samples = compacted.map((item, index) => ({
+            x: item.x,
+            y: item.y,
+            pressure: item.pressure,
+            time: index,
+            isCoalesced: false,
+            pointerId: 0,
+            pointerType: 'pen' as const,
+        }));
+        return {
+            samples,
+            startedAt: 0,
+            endedAt: samples.length - 1,
+            pointerId: 0,
+            pointerType: 'pen',
+            brushRadius: this.settingSize,
+        };
+    }
+
+    private getRenderedTrimSuggestion(
+        current: TSmartStroke,
+    ): TSmartStrokeTrimSuggestion | undefined {
+        const mode = SmartStrokeSettings.getMode();
+        if (mode === 'off' || this.recentRenderedStrokes.length === 0) {
+            return undefined;
+        }
+
+        const maxTrimDistance =
+            mode === 'weak'
+                ? Math.max(8, Math.min(24, this.settingSize * 4))
+                : mode === 'normal'
+                  ? Math.max(12, Math.min(48, this.settingSize * 8))
+                  : Math.max(18, Math.min(72, this.settingSize * 12));
+        const minConfidence = mode === 'weak' ? 0.45 : mode === 'normal' ? 0.15 : 0.03;
+        const analysis = analyzeSmartStroke(
+            current,
+            this.recentRenderedStrokes.slice(-16),
+            { maxTrimDistance },
+        );
+        const suggestion = analysis.suggestions.find((item) => item.type === 'trim');
+        return suggestion?.type === 'trim' && suggestion.confidence >= minConfidence
+            ? suggestion
+            : undefined;
+    }
+
+    private rememberRenderedStroke(stroke: TSmartStroke | undefined): void {
+        if (!stroke) {
+            return;
+        }
+        this.recentRenderedStrokes.push(stroke);
+        while (this.recentRenderedStrokes.length > 32) {
+            this.recentRenderedStrokes.shift();
+        }
     }
 
     private createTrimmedInputArr(trimPoint: { x: number; y: number }): TPressureInput[] | undefined {
@@ -459,9 +536,12 @@ export class PenBrush {
     }
 
     endLine(): void {
-        const pendingTrim = SmartStrokeSettings.consumePendingTrim();
-        if (pendingTrim) {
-            this.tryApplySmartTrim(pendingTrim.intersection);
+        const renderedStroke = this.createRenderedSmartStroke(this.inputArr);
+        const trimSuggestion = renderedStroke
+            ? this.getRenderedTrimSuggestion(renderedStroke)
+            : undefined;
+        if (trimSuggestion) {
+            this.tryApplySmartTrim(trimSuggestion.intersection);
         }
 
         const localSize = this.settingHasSizePressure
@@ -502,6 +582,8 @@ export class PenBrush {
                 ),
             );
         }
+
+        this.rememberRenderedStroke(this.createRenderedSmartStroke(this.inputArr));
 
         this.hasDrawnDot = false;
         this.inputArr = [];
@@ -589,6 +671,9 @@ export class PenBrush {
     }
 
     setContext(c: CanvasRenderingContext2D): void {
+        if (this.context.canvas && this.context.canvas !== c.canvas) {
+            this.recentRenderedStrokes = [];
+        }
         this.context = c;
     }
 

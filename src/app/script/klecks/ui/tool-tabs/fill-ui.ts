@@ -21,6 +21,8 @@ export class FillUi {
     private readonly growSelect: Select<string>;
     private isContiguous: boolean;
     private readonly eraserToggle: Checkbox;
+    private isColorCleanup: boolean = false;
+    private readonly cleanupRadiusSlider: KlSlider;
 
     // ----------------------------------- public -----------------------------------
 
@@ -151,6 +153,27 @@ export class FillUi {
             name: 'eraser-toggle',
         });
 
+        this.cleanupRadiusSlider = new KlSlider({
+            label: '정리 범위',
+            width: 250,
+            height: 30,
+            min: 16,
+            max: 256,
+            value: 96,
+        });
+        const cleanupRadiusEl = this.cleanupRadiusSlider.getElement();
+        cleanupRadiusEl.style.display = 'none';
+        const cleanupToggle = new Checkbox({
+            init: false,
+            label: '채색 넘침 정리',
+            title: '켜면 페인트통 클릭이 채우기 대신 선화 밖으로 넘친 채색을 정리합니다.',
+            callback: (b) => {
+                this.isColorCleanup = b;
+                cleanupRadiusEl.style.display = b ? '' : 'none';
+            },
+            name: 'color-spill-cleanup-toggle',
+        });
+
         this.rootEl.append(
             BB.el({
                 content: [contiguousToggle.getElement(), this.eraserToggle.getElement()],
@@ -160,6 +183,17 @@ export class FillUi {
                     gap: 10,
                 },
             }),
+        );
+        this.rootEl.append(
+            BB.el({
+                content: cleanupToggle.getElement(),
+                css: { marginTop: 12 },
+            }),
+            BB.el({
+                content: '현재 채색 레이어 위의 보이는 레이어를 선화 경계로 사용합니다. 넘친 색 부분을 탭하세요.',
+                css: { marginTop: 4, fontSize: 12, opacity: 0.75, lineHeight: 1.35 },
+            }),
+            cleanupRadiusEl,
         );
     }
 
@@ -198,6 +232,9 @@ export class FillUi {
     }
 
     getGrow(): number {
+        if (this.isColorCleanup) {
+            return -Math.max(16, Math.round(this.cleanupRadiusSlider.getValue()));
+        }
         return parseInt(this.growSelect.getValue(), 10);
     }
 

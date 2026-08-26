@@ -15,7 +15,6 @@ import { BrushCursorPixelSquare } from './brush-cursor-pixel-square';
 import { BrushCursorRound } from './brush-cursor-round';
 import { SmartStrokeRecorder } from '../../../events/smart-stroke-recorder';
 import { TSmartStroke, TSmartStrokeAnalysis } from '../../../events/smart-stroke.types';
-import { SmartStrokeSettings } from '../../../events/smart-stroke-settings';
 
 export type TEaselBrushEvent = {
     x: number;
@@ -88,25 +87,6 @@ export class EaselBrush implements TEaselTool {
         }
     }
 
-    private prepareSmartTrim(): void {
-        const mode = SmartStrokeSettings.getMode();
-        if (mode === 'off') {
-            SmartStrokeSettings.clearPendingTrim();
-            return;
-        }
-
-        const analysis = this.smartStrokeRecorder.analyzeLastStroke();
-        const suggestion = analysis.suggestions.find((item) => item.type === 'trim');
-        if (
-            suggestion?.type === 'trim' &&
-            suggestion.confidence >= SmartStrokeSettings.getMinTrimConfidence()
-        ) {
-            SmartStrokeSettings.setPendingTrim(suggestion);
-        } else {
-            SmartStrokeSettings.clearPendingTrim();
-        }
-    }
-
     private onExplodedPointer(e: TCoalescedPointerEvent): void {
         const vTransform = this.easel.getTransform();
         const m = createMatrixFromTransform(vTransform);
@@ -145,7 +125,6 @@ export class EaselBrush implements TEaselTool {
         }
 
         if (e.type === 'pointerdown' && e.button === 'left') {
-            SmartStrokeSettings.clearPendingTrim();
             if (shiftIsPressed) {
                 if (this.lastLineEnd) {
                     this.onLine(this.lastLineEnd, { x, y });
@@ -188,7 +167,6 @@ export class EaselBrush implements TEaselTool {
         }
         if (e.type === 'pointerup' && e.button === undefined && this.isDragging) {
             this.smartStrokeRecorder.end(e.time);
-            this.prepareSmartTrim();
             this.onLineEnd();
             this.isDragging = false;
             if (e.pointerType === 'touch') {
@@ -304,7 +282,6 @@ export class EaselBrush implements TEaselTool {
     activate(cursorPos?: TVector2D): void {
         this.easel.setCursor('crosshair');
         this.isDragging = false;
-        SmartStrokeSettings.clearPendingTrim();
         this.smartStrokeRecorder.cancel();
         if (cursorPos) {
             this.lastPos.x = cursorPos.x;

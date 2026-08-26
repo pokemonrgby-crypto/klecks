@@ -1,5 +1,6 @@
 import { BB } from '../../bb/bb';
 import { floodFillBits } from '../image-operations/flood-fill';
+import { cleanupColorSpill } from '../image-operations/color-spill-cleanup';
 import { drawShape } from '../image-operations/shape-tool';
 import { renderText, TRenderTextParam } from '../image-operations/render-text';
 import {
@@ -951,6 +952,37 @@ export class KlCanvas {
             : undefined;
         if (selectionMask && selectionMask[y * this.width + x] === 0) {
             // don't fill if outside of selection
+            return;
+        }
+
+        if (grow < 0) {
+            const targetLayer = this.layers[layerIndex];
+            const lineSources = this.layers
+                .slice(layerIndex + 1)
+                .filter((layer) => layer.isVisible && layer.opacity > 0)
+                .map((layer) => ({ context: layer.context, opacity: layer.opacity }));
+            if (lineSources.length === 0) {
+                return;
+            }
+            const bounds = cleanupColorSpill({
+                targetContext: targetLayer.context,
+                lineSources,
+                canvasWidth: this.width,
+                canvasHeight: this.height,
+                x,
+                y,
+                radius: Math.max(16, Math.min(256, Math.abs(Math.round(grow)))),
+                selectionMask,
+            });
+            if (bounds && !this.klHistory.isPaused()) {
+                this.klHistory.push({
+                    layerMap: createLayerMap(this.layers, {
+                        layerId: targetLayer.id,
+                        attributes: ['tiles'],
+                        bounds,
+                    }),
+                });
+            }
             return;
         }
 
