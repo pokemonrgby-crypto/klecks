@@ -54,6 +54,14 @@ type TCoalescedPointerEvent = {
     movementY: number;
     timeStamp: number;
     pressure: number;
+    tiltX?: number;
+    tiltY?: number;
+    twist?: number;
+    tangentialPressure?: number;
+    contactWidth?: number;
+    contactHeight?: number;
+    isPrimary?: boolean;
+    buttons?: number;
 };
 
 type TCorrectedPointerEvent = {
@@ -73,6 +81,13 @@ type TCorrectedPointerEvent = {
     pressure: number; // normalized
     buttons: number;
     button: number;
+    tiltX?: number;
+    tiltY?: number;
+    twist?: number;
+    tangentialPressure?: number;
+    contactWidth?: number;
+    contactHeight?: number;
+    isPrimary?: boolean;
     coalescedArr: TCoalescedPointerEvent[];
     target: Node | undefined;
     eventPreventDefault: () => void;
@@ -118,6 +133,8 @@ function getButtonStr(buttons: number): TPointerButton | undefined {
             return 'right';
         case 4:
             return 'middle';
+        case 32:
+            return 'eraser';
         default:
             return undefined;
     }
@@ -151,16 +168,17 @@ function correctPointerEvent(
         }
         /*
                 button -> buttons
-        none:	undefined -> 0
-        left:	0 -> 1
-        middle:	1 -> 4
-        right:	2 -> 2
-        fourth:	3 -> 8
-        fifth:	4 -> 16
+        none:\tundefined -> 0
+        left:\t0 -> 1
+        middle:\t1 -> 4
+        right:\t2 -> 2
+        fourth:\t3 -> 8
+        fifth:\t4 -> 16
+        pen eraser:\t5 -> 32
          */
         if (event.button !== undefined) {
             // old safari on mac has no buttons. remove eventually.
-            return [1, 4, 2, 8, 16][event.button];
+            return [1, 4, 2, 8, 16, 32][event.button];
         }
         return 0;
     }
@@ -182,6 +200,13 @@ function correctPointerEvent(
         pressure: pressureNormalizer.normalize(event.pressure, event.type, event.pointerType),
         buttons: determineButtons(),
         button: event.button,
+        tiltX: event.tiltX,
+        tiltY: event.tiltY,
+        twist: event.twist,
+        tangentialPressure: event.tangentialPressure,
+        contactWidth: event.width,
+        contactHeight: event.height,
+        isPrimary: event.isPrimary,
         coalescedArr: [],
         target: (event.target ?? undefined) as Node | undefined,
         eventPreventDefault: () => event.preventDefault(),
@@ -256,6 +281,14 @@ function correctPointerEvent(
                 customPressure === null
                     ? pressureNormalizer.normalize(eventItem.pressure)
                     : customPressure,
+            tiltX: eventItem.tiltX,
+            tiltY: eventItem.tiltY,
+            twist: eventItem.twist,
+            tangentialPressure: eventItem.tangentialPressure,
+            contactWidth: eventItem.width,
+            contactHeight: eventItem.height,
+            isPrimary: eventItem.isPrimary,
+            buttons: eventItem.buttons,
         });
 
         pointerObj.lastPageX = eventItem.pageX;
@@ -370,6 +403,15 @@ export class PointerListener {
             dX: correctedEvent.movementX,
             dY: correctedEvent.movementY,
             time: correctedEvent.timeStamp,
+            pressure: correctedEvent.pressure,
+            tiltX: correctedEvent.tiltX,
+            tiltY: correctedEvent.tiltY,
+            twist: correctedEvent.twist,
+            tangentialPressure: correctedEvent.tangentialPressure,
+            contactWidth: correctedEvent.contactWidth,
+            contactHeight: correctedEvent.contactHeight,
+            isPrimary: correctedEvent.isPrimary,
+            buttons: correctedEvent.buttons,
             eventPreventDefault: correctedEvent.eventPreventDefault,
             eventStopPropagation: correctedEvent.eventStopPropagation,
             ...custom,
@@ -394,6 +436,15 @@ export class PointerListener {
                         relY: coalescedItem.clientY - bounds.top + this.targetElement.scrollTop,
                         dX: coalescedItem.movementX,
                         dY: coalescedItem.movementY,
+                        pressure: coalescedItem.pressure,
+                        tiltX: coalescedItem.tiltX,
+                        tiltY: coalescedItem.tiltY,
+                        twist: coalescedItem.twist,
+                        tangentialPressure: coalescedItem.tangentialPressure,
+                        contactWidth: coalescedItem.contactWidth,
+                        contactHeight: coalescedItem.contactHeight,
+                        isPrimary: coalescedItem.isPrimary,
+                        buttons: coalescedItem.buttons,
                         time: coalescedItem.timeStamp,
                     });
                 }
