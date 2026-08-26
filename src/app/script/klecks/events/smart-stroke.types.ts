@@ -1,4 +1,4 @@
-import { TPointerType } from '../../bb/input/event.types';
+import { TPointerStylusData, TPointerType } from '../../bb/input/event.types';
 
 /**
  * One sampled point of a brush stroke in canvas coordinates.
@@ -7,7 +7,7 @@ import { TPointerType } from '../../bb/input/event.types';
  * stays raster-based, while recent vector samples can be used for local,
  * non-destructive stroke analysis and future post-correction.
  */
-export type TSmartStrokeSample = {
+export type TSmartStrokeSample = TPointerStylusData & {
     x: number;
     y: number;
     pressure: number;
