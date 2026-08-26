@@ -1,13 +1,12 @@
 import { LocalStorage } from '../../bb/base/local-storage';
-import { TSmartStrokeTrimSuggestion } from './smart-stroke.types';
 
 export type TSmartStrokeMode = 'off' | 'weak' | 'normal' | 'strong';
-export type TSmartStrokeTarget = 'current' | 'previous';
+export type TSmartStrokeTarget = 'current' | 'both';
 
 const STORAGE_KEY = 'smartStrokeMode';
 const TARGET_STORAGE_KEY = 'smartStrokeTarget';
 const VALID_MODES: readonly TSmartStrokeMode[] = ['off', 'weak', 'normal', 'strong'];
-const VALID_TARGETS: readonly TSmartStrokeTarget[] = ['current', 'previous'];
+const VALID_TARGETS: readonly TSmartStrokeTarget[] = ['current', 'both'];
 
 function readStoredMode(): TSmartStrokeMode {
     const stored = LocalStorage.getItem(STORAGE_KEY) as TSmartStrokeMode | null;
@@ -15,21 +14,20 @@ function readStoredMode(): TSmartStrokeMode {
 }
 
 function readStoredTarget(): TSmartStrokeTarget {
-    const stored = LocalStorage.getItem(TARGET_STORAGE_KEY) as TSmartStrokeTarget | null;
-    return stored && VALID_TARGETS.includes(stored) ? stored : 'current';
+    const stored = LocalStorage.getItem(TARGET_STORAGE_KEY);
+    // v2 stored `previous`; migrate that meaning to the clearer v3 `both`.
+    if (stored === 'previous') {
+        return 'both';
+    }
+    return stored && VALID_TARGETS.includes(stored as TSmartStrokeTarget)
+        ? (stored as TSmartStrokeTarget)
+        : 'current';
 }
 
 let mode: TSmartStrokeMode = readStoredMode();
 let target: TSmartStrokeTarget = readStoredTarget();
-let pendingTrim: TSmartStrokeTrimSuggestion | undefined;
 
-/**
- * Shared settings for smart-stroke correction.
- *
- * `previous` means the just-committed previous stroke may also be corrected.
- * Older strokes are intentionally not rewritten yet because later raster
- * operations could overlap them and make a safe replay ambiguous.
- */
+/** Shared settings for smart-stroke correction. */
 export const SmartStrokeSettings = {
     getMode(): TSmartStrokeMode {
         return mode;
@@ -38,7 +36,6 @@ export const SmartStrokeSettings = {
     setMode(nextMode: TSmartStrokeMode): void {
         mode = VALID_MODES.includes(nextMode) ? nextMode : 'off';
         LocalStorage.setItem(STORAGE_KEY, mode);
-        pendingTrim = undefined;
     },
 
     getTarget(): TSmartStrokeTarget {
@@ -48,7 +45,6 @@ export const SmartStrokeSettings = {
     setTarget(nextTarget: TSmartStrokeTarget): void {
         target = VALID_TARGETS.includes(nextTarget) ? nextTarget : 'current';
         LocalStorage.setItem(TARGET_STORAGE_KEY, target);
-        pendingTrim = undefined;
     },
 
     getMinTrimConfidence(): number {
@@ -64,22 +60,16 @@ export const SmartStrokeSettings = {
         return Number.POSITIVE_INFINITY;
     },
 
-    setPendingTrim(trim: TSmartStrokeTrimSuggestion | undefined): void {
-        pendingTrim = trim ? { ...trim, intersection: { ...trim.intersection } } : undefined;
-    },
-
-    clearPendingTrim(): void {
-        pendingTrim = undefined;
-    },
-
-    consumePendingTrim(): TSmartStrokeTrimSuggestion | undefined {
-        const result = pendingTrim;
-        pendingTrim = undefined;
-        return result
-            ? {
-                  ...result,
-                  intersection: { ...result.intersection },
-              }
-            : undefined;
+    getMinConnectConfidence(): number {
+        if (mode === 'weak') {
+            return 0.8;
+        }
+        if (mode === 'normal') {
+            return 0.58;
+        }
+        if (mode === 'strong') {
+            return 0.34;
+        }
+        return Number.POSITIVE_INFINITY;
     },
 };
