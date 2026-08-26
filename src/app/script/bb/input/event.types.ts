@@ -1,6 +1,6 @@
 export type TPointerEventType = 'pointerdown' | 'pointermove' | 'pointerup';
 export type TPointerType = 'touch' | 'mouse' | 'pen';
-export type TPointerButton = 'left' | 'middle' | 'right' | 'eraser';
+export type TPointerButton = 'left' | 'middle' | 'right';
 
 export type TPointerStylusData = {
     /** Pen tilt in degrees as exposed by Pointer Events. */
@@ -12,7 +12,7 @@ export type TPointerStylusData = {
     contactWidth?: number;
     contactHeight?: number;
     isPrimary?: boolean;
-    /** Raw PointerEvent.buttons bitmask. Useful for pen barrel/eraser buttons. */
+    /** Raw PointerEvent.buttons bitmask. Keep pen buttons device-agnostic until tested. */
     buttons?: number;
 };
 
