@@ -13,6 +13,8 @@ import { TEaselInterface, TEaselTool } from '../easel.types';
 import { TVector2D } from '../../../../bb/bb-types';
 import { BrushCursorPixelSquare } from './brush-cursor-pixel-square';
 import { BrushCursorRound } from './brush-cursor-round';
+import { SmartStrokeRecorder } from '../../../events/smart-stroke-recorder';
+import { TSmartStroke, TSmartStrokeAnalysis } from '../../../events/smart-stroke.types';
 
 export type TEaselBrushEvent = {
     x: number;
@@ -52,6 +54,38 @@ export class EaselBrush implements TEaselTool {
     private firstShiftPos: TVector2D | undefined;
     private hideCursorTimeout: ReturnType<typeof setTimeout> | undefined;
     private isOver: boolean = false;
+    private readonly smartStrokeRecorder = new SmartStrokeRecorder();
+
+    private addSmartStrokeSample(
+        e: TCoalescedPointerEvent,
+        x: number,
+        y: number,
+        pressure: number,
+        isStart: boolean,
+    ): void {
+        const sample = {
+            x,
+            y,
+            pressure,
+            time: e.time,
+            isCoalesced: e.isCoalesced,
+            pointerId: e.pointerId,
+            pointerType: e.pointerType,
+            tiltX: e.tiltX,
+            tiltY: e.tiltY,
+            twist: e.twist,
+            tangentialPressure: e.tangentialPressure,
+            contactWidth: e.contactWidth,
+            contactHeight: e.contactHeight,
+            isPrimary: e.isPrimary,
+            buttons: e.buttons,
+        };
+        if (isStart) {
+            this.smartStrokeRecorder.begin(sample, this.radius);
+        } else {
+            this.smartStrokeRecorder.add(sample);
+        }
+    }
 
     private onExplodedPointer(e: TCoalescedPointerEvent): void {
         const vTransform = this.easel.getTransform();
@@ -98,6 +132,7 @@ export class EaselBrush implements TEaselTool {
                 return;
             }
 
+            this.addSmartStrokeSample(e, x, y, pressure, true);
             this.onLineStart({ x, y, pressure, isCoalesced });
             this.isDragging = true;
         }
@@ -116,13 +151,22 @@ export class EaselBrush implements TEaselTool {
                         y: this.lineToolDirection === 'y' ? e.relY : this.firstShiftPos!.y,
                     };
                     const canvasP = applyToPoint(inverse(m), viewportP);
+                    this.addSmartStrokeSample(
+                        e,
+                        canvasP.x,
+                        canvasP.y,
+                        pressure,
+                        false,
+                    );
                     this.onLineGo({ ...canvasP, pressure, isCoalesced });
                 }
             } else {
+                this.addSmartStrokeSample(e, x, y, pressure, false);
                 this.onLineGo({ x, y, pressure, isCoalesced });
             }
         }
         if (e.type === 'pointerup' && e.button === undefined && this.isDragging) {
+            this.smartStrokeRecorder.end(e.time);
             this.onLineEnd();
             this.isDragging = false;
             if (e.pointerType === 'touch') {
@@ -219,9 +263,26 @@ export class EaselBrush implements TEaselTool {
         this.lastLineEnd = p ? { ...p } : undefined;
     }
 
+    getLastSmartStroke(): TSmartStroke | undefined {
+        return this.smartStrokeRecorder.getLastStroke();
+    }
+
+    analyzeLastSmartStroke(): TSmartStrokeAnalysis {
+        return this.smartStrokeRecorder.analyzeLastStroke();
+    }
+
+    getLastSmartStrokeAnalysis(): TSmartStrokeAnalysis {
+        return this.smartStrokeRecorder.getLastAnalysis();
+    }
+
+    clearSmartStrokeHistory(): void {
+        this.smartStrokeRecorder.clear();
+    }
+
     activate(cursorPos?: TVector2D): void {
         this.easel.setCursor('crosshair');
         this.isDragging = false;
+        this.smartStrokeRecorder.cancel();
         if (cursorPos) {
             this.lastPos.x = cursorPos.x;
             this.lastPos.y = cursorPos.y;

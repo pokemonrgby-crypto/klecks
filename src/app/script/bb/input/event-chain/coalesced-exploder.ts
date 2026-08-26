@@ -42,6 +42,16 @@ export class CoalescedExploder {
                     eventCopy.dX = coalescedItem.dX;
                     eventCopy.dY = coalescedItem.dY;
                     eventCopy.time = coalescedItem.time;
+                    eventCopy.pressure = coalescedItem.pressure ?? event.pressure;
+                    eventCopy.tiltX = coalescedItem.tiltX ?? event.tiltX;
+                    eventCopy.tiltY = coalescedItem.tiltY ?? event.tiltY;
+                    eventCopy.twist = coalescedItem.twist ?? event.twist;
+                    eventCopy.tangentialPressure =
+                        coalescedItem.tangentialPressure ?? event.tangentialPressure;
+                    eventCopy.contactWidth = coalescedItem.contactWidth ?? event.contactWidth;
+                    eventCopy.contactHeight = coalescedItem.contactHeight ?? event.contactHeight;
+                    eventCopy.isPrimary = coalescedItem.isPrimary ?? event.isPrimary;
+                    eventCopy.buttons = coalescedItem.buttons ?? event.buttons;
                     eventCopy.isCoalesced = i < event.coalescedArr.length - 1;
 
                     this.chainOut && this.chainOut(eventCopy);

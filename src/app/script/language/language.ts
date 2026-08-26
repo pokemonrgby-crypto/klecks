@@ -8,6 +8,7 @@ import {
 import { LocalStorage } from '../bb/base/local-storage';
 
 export const LS_LANGUAGE_KEY = 'klecks-language';
+const FORK_DEFAULT_LANGUAGE_CODE = 'ko';
 
 class LanguageStrings {
     private data: readonly string[];
@@ -124,7 +125,25 @@ export function getLanguage(useLocalStorage?: boolean): string {
     return result;
 }
 
-const activeLanguageCode = getLanguage(true);
+function getInitialLanguageCode(): string {
+    try {
+        const storedCode = LocalStorage.getItem(LS_LANGUAGE_KEY);
+        if (
+            storedCode &&
+            languages.some((item) => item.code.toLowerCase() === storedCode.toLowerCase())
+        ) {
+            return storedCode;
+        }
+    } catch (e) {
+        // likely cookies disabled in Safari
+    }
+
+    // This fork is primarily used as a Korean-first tablet drawing app.
+    // Keep the normal language picker intact, but make the first launch Korean.
+    return FORK_DEFAULT_LANGUAGE_CODE;
+}
+
+const activeLanguageCode = getInitialLanguageCode();
 export const LANGUAGE_STRINGS = new LanguageStrings();
 
 export const LANG = (code: TTranslationCode, replace?: { [key: string]: string }): string => {

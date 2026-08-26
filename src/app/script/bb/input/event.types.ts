@@ -1,8 +1,22 @@
 export type TPointerEventType = 'pointerdown' | 'pointermove' | 'pointerup';
 export type TPointerType = 'touch' | 'mouse' | 'pen';
-export type TPointerButton = 'left' | 'middle' | 'right';
+export type TPointerButton = 'left' | 'middle' | 'right' | 'eraser';
 
-export type TPointerEvent = {
+export type TPointerStylusData = {
+    /** Pen tilt in degrees as exposed by Pointer Events. */
+    tiltX?: number;
+    tiltY?: number;
+    /** Pen rotation in degrees, when supported by the browser/device. */
+    twist?: number;
+    tangentialPressure?: number;
+    contactWidth?: number;
+    contactHeight?: number;
+    isPrimary?: boolean;
+    /** Raw PointerEvent.buttons bitmask. Keep pen buttons device-agnostic until tested. */
+    buttons?: number;
+};
+
+export type TPointerEvent = TPointerStylusData & {
     type: TPointerEventType;
     pointerId: number; // long
     pointerType: TPointerType;
@@ -13,13 +27,13 @@ export type TPointerEvent = {
     pageX: number; // todo docs
     pageY: number;
     clientX: number; // todo docs
-    clientY: number; // todo docs
+    clientY: number;
     relX: number; // position relative to top left of target - todo what scale tho
     relY: number;
     dX: number; // movementX not supported by safari on iOS, so need my own
     dY: number;
 
-    coalescedArr?: {
+    coalescedArr?: (TPointerStylusData & {
         altKey: boolean;
         ctrlKey: boolean;
         metaKey: boolean;
@@ -32,8 +46,9 @@ export type TPointerEvent = {
         relY: number;
         dX: number;
         dY: number;
+        pressure?: number;
         time: number; // same timescale as performance.now() - might be exact same number as in parent
-    }[];
+    })[];
     time: number; // same timescale as performance.now()
 
     button?: TPointerButton;
