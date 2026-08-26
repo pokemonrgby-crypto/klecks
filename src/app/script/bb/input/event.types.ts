@@ -1,6 +1,6 @@
 export type TPointerEventType = 'pointerdown' | 'pointermove' | 'pointerup';
 export type TPointerType = 'touch' | 'mouse' | 'pen';
-export type TPointerButton = 'left' | 'middle' | 'right';
+export type TPointerButton = 'left' | 'middle' | 'right' | 'eraser';
 
 export type TPointerStylusData = {
     /** Pen tilt in degrees as exposed by Pointer Events. */
