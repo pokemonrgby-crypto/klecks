@@ -6,6 +6,7 @@ import { LANG } from '../../../language/language';
 import { TFillSampling } from '../../kl-types';
 import { KlColorSlider } from '../components/kl-color-slider';
 import { css } from '../../../bb/base/base';
+import { TColorSpillLineSourceMode } from '../../image-operations/color-spill-cleanup';
 
 /**
  * Paint Bucket tab contents (color slider, opacity slider, etc)
@@ -21,8 +22,13 @@ export class FillUi {
     private readonly growSelect: Select<string>;
     private isContiguous: boolean;
     private readonly eraserToggle: Checkbox;
+
     private isColorCleanup: boolean = false;
+    private readonly normalControlsEl: HTMLElement;
+    private readonly cleanupControlsEl: HTMLElement;
     private readonly cleanupRadiusSlider: KlSlider;
+    private readonly cleanupBarrierGrowSlider: KlSlider;
+    private readonly cleanupReferenceSelect: Select<TColorSpillLineSourceMode>;
 
     // ----------------------------------- public -----------------------------------
 
@@ -35,15 +41,40 @@ export class FillUi {
             },
         });
         this.isVisible = true;
+        this.colorSlider = p.colorSlider;
+
+        const cleanupToggle = new Checkbox({
+            init: false,
+            label: '채색 넘침 보정 브러시',
+            title: '켜면 페인트통이 연속 보정 브러시로 바뀌고, 선화 바깥쪽 채색만 지웁니다.',
+            callback: (b) => {
+                this.isColorCleanup = b;
+                this.normalControlsEl.style.display = b ? 'none' : 'block';
+                this.cleanupControlsEl.style.display = b ? 'block' : 'none';
+            },
+            name: 'color-spill-cleanup-toggle',
+        });
+        this.rootEl.append(
+            BB.el({
+                content: cleanupToggle.getElement(),
+            }),
+            BB.el({
+                content: 'S Pen으로 문지르면 선화 안쪽은 유지하고 바깥으로 삐져나온 채색만 지웁니다.',
+                css: { marginTop: 4, fontSize: 12, opacity: 0.75, lineHeight: 1.35 },
+            }),
+        );
+
+        this.normalControlsEl = BB.el({
+            parent: this.rootEl,
+            css: { marginTop: 10 },
+        });
 
         this.colorDiv = BB.el({
-            parent: this.rootEl,
+            parent: this.normalControlsEl,
             css: {
                 marginBottom: 10,
             },
         });
-
-        this.colorSlider = p.colorSlider;
 
         this.opacitySlider = new KlSlider({
             label: LANG('opacity'),
@@ -55,7 +86,7 @@ export class FillUi {
             toValue: (displayValue) => displayValue / 100,
             toDisplayValue: (value) => value * 100,
         });
-        this.rootEl.append(this.opacitySlider.getElement());
+        this.normalControlsEl.append(this.opacitySlider.getElement());
 
         this.toleranceSlider = new KlSlider({
             label: LANG('bucket-tolerance'),
@@ -70,10 +101,10 @@ export class FillUi {
         css(this.toleranceSlider.getElement(), {
             marginTop: 10,
         });
-        this.rootEl.append(this.toleranceSlider.getElement());
+        this.normalControlsEl.append(this.toleranceSlider.getElement());
 
         const selectRow = BB.el({
-            parent: this.rootEl,
+            parent: this.normalControlsEl,
             css: {
                 display: 'flex',
                 marginTop: 10,
@@ -96,7 +127,7 @@ export class FillUi {
             initValue: 'all',
             name: 'sampling-mode',
         });
-        const modePointerListener = new BB.PointerListener({
+        new BB.PointerListener({
             target: this.modeSelect.getElement(),
             onWheel: (e) => {
                 this.modeSelect.setDeltaValue(e.deltaY);
@@ -127,7 +158,7 @@ export class FillUi {
             initValue: '0',
             name: 'fill-growth',
         });
-        const growPointerListener = new BB.PointerListener({
+        new BB.PointerListener({
             target: this.growSelect.getElement(),
             onWheel: (e) => {
                 this.growSelect.setDeltaValue(e.deltaY);
@@ -153,28 +184,7 @@ export class FillUi {
             name: 'eraser-toggle',
         });
 
-        this.cleanupRadiusSlider = new KlSlider({
-            label: '정리 범위',
-            width: 250,
-            height: 30,
-            min: 16,
-            max: 256,
-            value: 96,
-        });
-        const cleanupRadiusEl = this.cleanupRadiusSlider.getElement();
-        cleanupRadiusEl.style.display = 'none';
-        const cleanupToggle = new Checkbox({
-            init: false,
-            label: '채색 넘침 정리',
-            title: '켜면 페인트통 클릭이 채우기 대신 선화 밖으로 넘친 채색을 정리합니다.',
-            callback: (b) => {
-                this.isColorCleanup = b;
-                cleanupRadiusEl.style.display = b ? '' : 'none';
-            },
-            name: 'color-spill-cleanup-toggle',
-        });
-
-        this.rootEl.append(
+        this.normalControlsEl.append(
             BB.el({
                 content: [contiguousToggle.getElement(), this.eraserToggle.getElement()],
                 css: {
@@ -184,16 +194,67 @@ export class FillUi {
                 },
             }),
         );
-        this.rootEl.append(
+
+        this.cleanupControlsEl = BB.el({
+            parent: this.rootEl,
+            css: {
+                display: 'none',
+                marginTop: 12,
+            },
+        });
+
+        this.cleanupRadiusSlider = new KlSlider({
+            label: '보정 브러시 크기',
+            width: 250,
+            height: 30,
+            min: 4,
+            max: 256,
+            value: 52,
+            manualInputRoundDigits: 0,
+        });
+        this.cleanupControlsEl.append(this.cleanupRadiusSlider.getElement());
+
+        const referenceRow = BB.el({
+            parent: this.cleanupControlsEl,
+            css: {
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginTop: 10,
+                fontSize: 14,
+            },
+        });
+        referenceRow.append(BB.el({ content: '선화 기준&nbsp;' }));
+        this.cleanupReferenceSelect = new Select<TColorSpillLineSourceMode>({
+            optionArr: [
+                ['nearest-above', '바로 위'],
+                ['all-above', '위쪽 모두'],
+                ['nearest-below', '바로 아래'],
+                ['all-below', '아래쪽 모두'],
+            ],
+            initValue: 'nearest-above',
+            name: 'color-spill-line-source',
+            title: '현재 채색 레이어를 기준으로 어떤 보이는 레이어를 선화 경계로 사용할지 선택합니다.',
+            css: { minWidth: 112 },
+        });
+        referenceRow.append(this.cleanupReferenceSelect.getElement());
+
+        this.cleanupBarrierGrowSlider = new KlSlider({
+            label: '선 틈 보정',
+            width: 250,
+            height: 30,
+            min: 0,
+            max: 4,
+            value: 1,
+            manualInputRoundDigits: 0,
+        });
+        css(this.cleanupBarrierGrowSlider.getElement(), { marginTop: 10 });
+        this.cleanupControlsEl.append(
+            this.cleanupBarrierGrowSlider.getElement(),
             BB.el({
-                content: cleanupToggle.getElement(),
-                css: { marginTop: 12 },
-            }),
-            BB.el({
-                content: '현재 채색 레이어 위의 보이는 레이어를 선화 경계로 사용합니다. 넘친 색 부분을 탭하세요.',
+                content: '값을 높이면 분석할 때만 선화를 조금 두껍게 보아 작은 틈으로 바깥 영역이 새는 것을 줄입니다. 실제 선화는 바뀌지 않습니다.',
                 css: { marginTop: 4, fontSize: 12, opacity: 0.75, lineHeight: 1.35 },
             }),
-            cleanupRadiusEl,
         );
     }
 
@@ -212,11 +273,8 @@ export class FillUi {
         }
     }
 
-    /**
-     * [0, 1]
-     */
+    /** [0, 1] */
     getTolerance(): number {
-        // slider may display 0 when value is 1 -> avoid confusing users
         if (Math.round(this.toleranceSlider.getDisplayValue()) === 0) {
             return 0;
         }
@@ -232,9 +290,6 @@ export class FillUi {
     }
 
     getGrow(): number {
-        if (this.isColorCleanup) {
-            return -Math.max(16, Math.round(this.cleanupRadiusSlider.getValue()));
-        }
         return parseInt(this.growSelect.getValue(), 10);
     }
 
@@ -244,5 +299,21 @@ export class FillUi {
 
     getIsEraser(): boolean {
         return this.eraserToggle.getValue();
+    }
+
+    getIsColorCleanup(): boolean {
+        return this.isColorCleanup;
+    }
+
+    getColorCleanupRadius(): number {
+        return Math.max(2, this.cleanupRadiusSlider.getValue() / 2);
+    }
+
+    getColorCleanupLineSourceMode(): TColorSpillLineSourceMode {
+        return this.cleanupReferenceSelect.getValue();
+    }
+
+    getColorCleanupBarrierGrow(): number {
+        return Math.max(0, Math.round(this.cleanupBarrierGrowSlider.getValue()));
     }
 }
