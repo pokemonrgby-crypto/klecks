@@ -682,6 +682,8 @@ export class KlApp {
                     },
                     getIsCleanupMode: () => fillUi.getIsColorCleanup(),
                     getCleanupRadius: () => fillUi.getColorCleanupRadius(),
+                    getCleanupDecisionRadius: () =>
+                        fillUi.getColorCleanupDecisionRadius(),
                     onCleanupStart: (p) => {
                         const didStart = this.klCanvas.beginColorSpillCleanup(
                             currentLayer.index,
@@ -697,7 +699,8 @@ export class KlApp {
                                 p.x,
                                 p.y,
                                 fillUi.getColorCleanupRadius(),
-                            )
+                                fillUi.getColorCleanupDecisionRadius(),
+                            ).didChange
                         ) {
                             this.easel.requestRender();
                         }
@@ -709,7 +712,8 @@ export class KlApp {
                                 p.x,
                                 p.y,
                                 fillUi.getColorCleanupRadius(),
-                            )
+                                fillUi.getColorCleanupDecisionRadius(),
+                            ).didChange
                         ) {
                             this.easel.requestRender();
                         }
