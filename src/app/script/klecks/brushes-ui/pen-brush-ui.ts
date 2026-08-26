@@ -60,7 +60,7 @@ export const penBrushUi = (function () {
     });
 
     brushInterface.Ui = function (p) {
-        const div = document.createElement('div'); // the gui
+        const div = document.createElement('div');
         const brush = new BRUSHES.PenBrush();
         brush.setHistory(p.klHistory);
         p.onSizeChange(brush.getSize());
@@ -132,7 +132,7 @@ export const penBrushUi = (function () {
             ],
             initValue: SmartStrokeSettings.getMode(),
             onChange: (mode) => SmartStrokeSettings.setMode(mode),
-            title: '선 끝이 기존 선을 짧게 지나친 경우 자동으로 교차점까지 정리합니다.',
+            title: '짧게 지나친 꼬리를 자르고, 가까운 선 끝은 실제로 이어 줍니다.',
             name: 'smart-stroke-mode',
             css: {
                 minWidth: 92,
@@ -141,7 +141,7 @@ export const penBrushUi = (function () {
         const smartStrokeRow = BB.el({
             tagName: 'label',
             content: '스마트 선 보정&nbsp;',
-            title: '현재는 일반 원형 펜의 짧은 삐져나감 자동 자르기를 지원합니다.',
+            title: '일반 원형 Pen + Scatter 0에서 trim과 짧은 gap 연결을 지원합니다.',
             css: {
                 display: 'flex',
                 justifyContent: 'space-between',
@@ -154,13 +154,13 @@ export const penBrushUi = (function () {
         const smartStrokeTargetSelect = new Select<TSmartStrokeTarget>({
             optionArr: [
                 ['current', '현재 획만'],
-                ['previous', '직전 획까지'],
+                ['both', '현재 + 직전 획'],
             ],
             initValue: SmartStrokeSettings.getTarget(),
             onChange: (target) => SmartStrokeSettings.setTarget(target),
-            title: '직전 획까지를 선택하면 방금 그은 획과 직전 획의 꼬리를 비교해 더 자연스러운 쪽을 정리합니다.',
+            title: '현재 + 직전 획에서는 교차점 뒤의 짧은 꼬리가 두 획 모두 보정 기준에 들어오면 둘 다 교차점까지 자릅니다.',
             name: 'smart-stroke-target',
-            css: { minWidth: 112 },
+            css: { minWidth: 126 },
         });
         const smartStrokeTargetRow = BB.el({
             tagName: 'label',
