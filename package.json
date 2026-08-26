@@ -5,8 +5,7 @@
   ],
   "scripts": {
     "start": "parcel serve src/index.html --no-cache",
-    "prebuild": "npm run icon:build && npm run lang:build",
-    "build": "parcel build src/index.html src/help.html --public-url .",
+    "build": "npm run icon:build && npm run lang:build && parcel build src/index.html src/help.html --public-url .",
     "build:embed": "parcel build src/embed.ts src/help.html --public-url .",
     "lang:add": "node src/languages/generate.js add",
     "lang:sync": "node src/languages/generate.js sync",
