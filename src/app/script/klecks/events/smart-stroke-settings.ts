@@ -7,6 +7,7 @@ const STORAGE_KEY = 'smartStrokeMode';
 const TARGET_STORAGE_KEY = 'smartStrokeTarget';
 const VALID_MODES: readonly TSmartStrokeMode[] = ['off', 'weak', 'normal', 'strong'];
 const VALID_TARGETS: readonly TSmartStrokeTarget[] = ['current', 'both'];
+const SMART_STROKE_EXPERIMENT_ENABLED = false;
 
 function readStoredMode(): TSmartStrokeMode {
     const stored = LocalStorage.getItem(STORAGE_KEY) as TSmartStrokeMode | null;
@@ -30,7 +31,7 @@ let target: TSmartStrokeTarget = readStoredTarget();
 /** Shared settings for smart-stroke correction. */
 export const SmartStrokeSettings = {
     getMode(): TSmartStrokeMode {
-        return mode;
+        return SMART_STROKE_EXPERIMENT_ENABLED ? mode : 'off';
     },
 
     setMode(nextMode: TSmartStrokeMode): void {
