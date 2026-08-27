@@ -300,8 +300,8 @@ export const penBrushUi = (function () {
                         marginTop: 10,
                     },
                 }),
-                smartStrokeRow,
-                smartStrokeTargetRow,
+                // Smart-stroke correction is temporarily hidden while the
+                // smart color / virtual-barrier workflow is evaluated.
             );
         }
 

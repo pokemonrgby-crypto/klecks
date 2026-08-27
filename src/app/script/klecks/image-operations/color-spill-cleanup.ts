@@ -61,7 +61,11 @@ function growBarrier(
                 const y1 = Math.min(height - 1, y + 1);
                 for (let ny = y0; ny <= y1; ny++) {
                     for (let nx = x0; nx <= x1; nx++) {
-                        expanded[ny * width + nx] = 1;
+                        const neighborIndex = ny * width + nx;
+                        expanded[neighborIndex] = Math.max(
+                            expanded[neighborIndex],
+                            barrier[index],
+                        );
                     }
                 }
             }
@@ -99,8 +103,11 @@ export function createColorCorrectionLineMask(p: {
     const lineData = lineCtx.getImageData(0, 0, width, height).data;
     let barrier = new Uint8Array(width * height);
     for (let i = 0; i < barrier.length; i++) {
-        if (lineData[i * 4 + 3] >= 10) {
-            barrier[i] = 1;
+        const alpha = lineData[i * 4 + 3];
+        if (alpha >= 10) {
+            // Keep real antialias / layer-opacity coverage. Non-zero still
+            // behaves as a barrier, while the value is reused for edge alpha.
+            barrier[i] = alpha;
         }
     }
     BB.freeCanvas(lineCanvas);
@@ -174,6 +181,13 @@ export function correctColorLocallyWithBrush(p: {
 
     const decisionRadiusSq = decisionRadius * decisionRadius;
     const applyRadiusSq = applyRadius * applyRadius;
+    const lineDistance = new Float32Array(width * height);
+    lineDistance.fill(Number.POSITIVE_INFINITY);
+    const nearestLineAlpha = new Uint8Array(width * height);
+    const distanceQueue = new Int32Array(width * height);
+    let distanceHead = 0;
+    let distanceTail = 0;
+
     for (let ly = 0; ly < height; ly++) {
         const gy = y1 + ly;
         const dy = gy + 0.5 - p.y;
@@ -184,10 +198,52 @@ export function correctColorLocallyWithBrush(p: {
                 continue;
             }
             const globalIndex = gy * p.canvasWidth + gx;
-            if (!p.lineMask[globalIndex]) {
-                labels[ly * width + lx] = -1;
+            const localIndex = ly * width + lx;
+            const lineAlpha = p.lineMask[globalIndex];
+            if (!lineAlpha) {
+                labels[localIndex] = -1;
+            } else {
+                lineDistance[localIndex] = 0;
+                nearestLineAlpha[localIndex] = lineAlpha;
+                distanceQueue[distanceTail++] = localIndex;
             }
         }
+    }
+
+    // 4-neighbour distance is sufficient here: this field is only used to
+    // soften paint alpha around the inferred boundary, not for geometry.
+    while (distanceHead < distanceTail) {
+        const index = distanceQueue[distanceHead++];
+        const lx = index % width;
+        const ly = Math.floor(index / width);
+        const nextDistance = lineDistance[index] + 1;
+        const coverage = nearestLineAlpha[index];
+        const tryRelax = (next: number, nx: number, ny: number) => {
+            if (next < 0 || next >= lineDistance.length) {
+                return;
+            }
+            const gx = x1 + nx;
+            const gy = y1 + ny;
+            const dx = gx + 0.5 - p.x;
+            const dy = gy + 0.5 - p.y;
+            if (dx * dx + dy * dy > decisionRadiusSq) {
+                return;
+            }
+            if (nextDistance < lineDistance[next]) {
+                lineDistance[next] = nextDistance;
+                nearestLineAlpha[next] = coverage;
+                distanceQueue[distanceTail++] = next;
+            } else if (
+                nextDistance === lineDistance[next] &&
+                coverage > nearestLineAlpha[next]
+            ) {
+                nearestLineAlpha[next] = coverage;
+            }
+        };
+        if (lx > 0) tryRelax(index - 1, lx - 1, ly);
+        if (lx + 1 < width) tryRelax(index + 1, lx + 1, ly);
+        if (ly > 0) tryRelax(index - width, lx, ly - 1);
+        if (ly + 1 < height) tryRelax(index + width, lx, ly + 1);
     }
 
     const queue = new Int32Array(width * height);
@@ -310,8 +366,9 @@ export function correctColorLocallyWithBrush(p: {
     insideGroup.forEach((component) => classification.set(component.id, 'inside'));
 
     const representativeColor = new Map<number, { r: number; g: number; b: number }>();
+    const representativeAlpha = new Map<number, number>();
     insideGroup.forEach((component) => {
-        if (component.alphaSum <= 0) {
+        if (component.alphaSum <= 0 || component.coloredCount <= 0) {
             return;
         }
         representativeColor.set(component.id, {
@@ -319,7 +376,29 @@ export function correctColorLocallyWithBrush(p: {
             g: Math.round(component.gSum / component.alphaSum),
             b: Math.round(component.bSum / component.alphaSum),
         });
+        // Do not force repaired paint to 255. Match the alpha already used by
+        // the surrounding fill so semi-transparent flat colors remain intact.
+        representativeAlpha.set(
+            component.id,
+            Math.max(1, Math.min(255, Math.round(component.alphaSum / component.coloredCount))),
+        );
     });
+
+    // Automatic softness: a few pixels for normal brush sizes, capped so a
+    // huge decision circle cannot create an enormous translucent halo.
+    const edgeSoftness = Math.max(1.5, Math.min(6, applyRadius * 0.12));
+    const getBoundaryInfo = (localIndex: number) => {
+        const distanceToLine = lineDistance[localIndex];
+        if (!Number.isFinite(distanceToLine) || distanceToLine >= edgeSoftness) {
+            return { proximity: 0, coverage: 0 };
+        }
+        const t = Math.max(0, Math.min(1, distanceToLine / edgeSoftness));
+        const smoothT = t * t * (3 - 2 * t);
+        return {
+            proximity: 1 - smoothT,
+            coverage: nearestLineAlpha[localIndex] / 255,
+        };
+    };
 
     let changed = false;
     let changedX1 = width;
@@ -350,25 +429,49 @@ export function correctColorLocallyWithBrush(p: {
 
             const alphaIndex = localIndex * 4 + 3;
             const alpha = data[alphaIndex];
+            const boundary = getBoundaryInfo(localIndex);
+
             if (regionClass === 'outside') {
                 if (alpha === 0) {
                     continue;
                 }
-                data[alphaIndex] = 0;
+                // Deep outside -> transparent. Close to a semi-transparent /
+                // antialiased line -> keep a proportional amount of paint so
+                // the edge does not become a hard 1-bit cut.
+                const keepFactor = Math.max(
+                    0,
+                    Math.min(1, boundary.coverage * boundary.proximity * 0.92),
+                );
+                const targetAlpha = Math.round(alpha * keepFactor);
+                if (Math.abs(targetAlpha - alpha) <= 1) {
+                    continue;
+                }
+                data[alphaIndex] = targetAlpha;
             } else {
-                // First version fills only genuinely missing pixels. Existing
-                // semi-transparent/shaded paint is intentionally preserved.
-                if (alpha > 8) {
-                    continue;
-                }
                 const color = representativeColor.get(componentId);
-                if (!color) {
+                const interiorAlpha = representativeAlpha.get(componentId);
+                if (!color || interiorAlpha === undefined) {
                     continue;
                 }
-                data[localIndex * 4] = color.r;
-                data[localIndex * 4 + 1] = color.g;
-                data[localIndex * 4 + 2] = color.b;
-                data[alphaIndex] = 255;
+
+                // Move from a softer alpha at the boundary to the component's
+                // natural fill alpha deeper inside. Stronger line coverage has
+                // a stronger effect; faint AA pixels only soften a little.
+                const edgeFactor = Math.max(
+                    0.12,
+                    1 - boundary.coverage * boundary.proximity * 0.82,
+                );
+                const targetAlpha = Math.max(1, Math.round(interiorAlpha * edgeFactor));
+                if (alpha + 2 >= targetAlpha) {
+                    continue;
+                }
+
+                const blend = Math.max(0, Math.min(1, (targetAlpha - alpha) / 255));
+                const rgbIndex = localIndex * 4;
+                data[rgbIndex] = Math.round(BB.mix(data[rgbIndex], color.r, blend));
+                data[rgbIndex + 1] = Math.round(BB.mix(data[rgbIndex + 1], color.g, blend));
+                data[rgbIndex + 2] = Math.round(BB.mix(data[rgbIndex + 2], color.b, blend));
+                data[alphaIndex] = targetAlpha;
             }
 
             changed = true;
